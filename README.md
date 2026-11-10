@@ -105,12 +105,12 @@ socket from that one address; there is no separate Node process to run.
 
 | Task | Command | Notes |
 |---|---|---|
-| Rebuild after pulling or editing UI code | `cd web-next && npm run build` | Reload the page. The first build after a fresh clone needs one server restart so it is picked up. |
+| Rebuild after pulling or editing UI code | `cd web-next && npm run build` | Reload the page; no server restart needed. |
 | Live-reload development | `cd web-next && npm run dev` | Open http://localhost:3000 with the Python server still running; the dev UI talks to its API and `/ws` on 127.0.0.1:8800. |
 | Type-check | `cd web-next && npx tsc --noEmit` | |
 
-Without `web-next/out` the server falls back to the earlier vanilla-JS terminal, which is also
-always at http://127.0.0.1:8800/legacy.
+If the UI has not been built yet, http://127.0.0.1:8800 shows a short page with the build command;
+the API and the live socket work either way.
 
 ### Tests and smoke checks
 
@@ -297,7 +297,6 @@ ctb/                      Python service (internal package name from the project
   runs.py · universe.py   test runs, symbol validation
   engine.py · server.py   orchestration, API, /ws, serves the UI
 web-next/                 terminal UI (Next.js 16, static export to web-next/out)
-web/                      earlier vanilla-JS terminal (/legacy)
 scripts/                  smoke tests, backfills, run definitions
 docs/                     brand assets and demo media
 ```

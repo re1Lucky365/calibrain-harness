@@ -102,8 +102,10 @@ def reason_from_orders(orders: list[dict[str, Any] | None]) -> str | None:
     for o in orders:
         if not o:
             continue
-        ct, st = o.get("createType") or "", o.get("stopOrderType") or ""
-        if "StopLoss" in ct or st in ("StopLoss", "PartialStopLoss", "TrailingStop"):
+        ct, st, link = o.get("createType") or "", o.get("stopOrderType") or "", o.get("orderLinkId") or ""
+        if link.startswith("ctb-tp-"):
+            kinds.add("take_profit")
+        elif "StopLoss" in ct or st in ("StopLoss", "PartialStopLoss", "TrailingStop"):
             kinds.add("stop_loss")
         elif "TakeProfit" in ct or st in ("TakeProfit", "PartialTakeProfit"):
             kinds.add("take_profit")
@@ -136,6 +138,9 @@ class Executor:
         self.last_sync = 0.0
         self.sync_error: str | None = None
         self.stream = None  # BybitPrivateStream, attached by the engine
+        self.price_fn: Callable[[str], dict[str, Any]] | None = None  # testnet ticker, attached by the engine
+        self._managed: dict[str, dict[str, Any]] = {}  # symbol -> open managed trade (stop watch)
+        self._exiting: set[str] = set()
 
     async def start(self) -> None:
         await self.client.sync_time()
@@ -253,9 +258,16 @@ class Executor:
                 await self.client.set_leverage(symbol, lev)
                 self._lev_set.add(symbol)
 
-            # provisional bracket valid for any fill inside the cap; re-anchored to the real fill below
-            tp0 = _round_tick(cap * (1 + sign * tp_bp / 10000), tick)
-            sl0 = _round_tick(cap * (1 - sign * sl_bp / 10000), tick)
+            managed = self.s.exit_mode == "managed"
+            stop_mult = self.s.backstop_mult if managed else 1.0
+            # provisional bracket valid for any fill inside the cap; re-anchored to the real fill below.
+            # Managed mode attaches only the far backstop stop; the target becomes a resting limit.
+            tp0 = None if managed else _round_tick(cap * (1 + sign * tp_bp / 10000), tick)
+            # The managed backstop is a disaster stop: triggered on MARK price (follows mainnet, immune to
+            # stray testnet prints) and placed relative to mark, so a thin-book print cannot fire it.
+            mark0 = await self._mark(symbol) if managed else 0.0
+            sl0 = _round_tick((mark0 or cap) * (1 - sign * stop_mult * sl_bp / 10000), tick)
+            trig = "MarkPrice" if managed else self.s.tpsl_trigger
             link = f"ctb-{decision_id}-{uuid.uuid4().hex[:8]}"
             mode = "exploration" if exploration else "strict"
             trade_id = self.db.insert("trades", {
@@ -265,11 +277,12 @@ class Executor:
                 "status": "opening", "ev_r": ev_r, "risk_usd": qty * ref * sl_bp / 10000, "mode": mode, "notes": mode,
                 "requested_qty": qty, "ref_price": ref, "cap_price": cap, "decision_price": decision_price,
                 "book_spread_bp": round(spread_bp, 2), "planned_sl_bp": sl_bp, "planned_tp_bp": tp_bp,
+                "exit_mode": self.s.exit_mode,
             })
             try:
                 res = await self.client.market_order(symbol, "buy" if buy else "sell", _fmt(qty, step), link_id=link,
-                                                     take_profit=_fmt(tp0, tick), stop_loss=_fmt(sl0, tick), limit_price=_fmt(cap, tick),
-                                                     trigger_by=self.s.tpsl_trigger)
+                                                     take_profit=_fmt(tp0, tick) if tp0 else None, stop_loss=_fmt(sl0, tick), limit_price=_fmt(cap, tick),
+                                                     trigger_by=trig)
             except BybitError as exc:
                 self.db.update("trades", trade_id, {"status": "error", "notes": str(exc)})
                 self.emit("event", self.db.event("error", "entry_rejected", str(exc), symbol))
@@ -294,7 +307,15 @@ class Executor:
                 "notional": filled * entry, "entry_fee": _f(order.get("cumExecFee")), "entry_slip_bp": slip,
                 "risk_usd": filled * abs(entry - sl0), "entry_latency_ms": round((time.time() - t0) * 1000),
             })
-            protection, tp_live, sl_live = await self._anchor_bracket(symbol, side, entry, tp, sl, tick)
+            if managed:
+                mark1 = await self._mark(symbol) or mark0
+                backstop = _round_tick(mark1 * (1 - sign * stop_mult * sl_bp / 10000), tick)
+                protection, tp_live, sl_live = await self._anchor_bracket(symbol, side, mark1, None, backstop, tick, trigger_by="MarkPrice")
+            else:
+                backstop = sl
+                protection, tp_live, sl_live = await self._anchor_bracket(symbol, side, entry, tp, sl, tick)
+            if managed and protection not in ("flattened", "gone"):
+                protection, tp_live, sl_live = await self._arm_managed(trade_id, symbol, side, entry, filled, tp, sl, backstop, tick, step, protection)
             if protection == "flattened":
                 self.db.update("trades", trade_id, {"protection": "failed"})
                 return {"ok": False, "reason": "bracket could not be placed around the fill; flattened", "trade_id": trade_id}
@@ -303,6 +324,7 @@ class Executor:
                 return {"ok": True, "trade_id": trade_id, "entry": entry, "qty": filled}
             self.db.update("trades", trade_id, {"protection": protection, "tp_price": tp_live, "sl_price": sl_live,
                                                 "risk_usd": filled * abs(entry - sl_live)})
+            self._refresh_managed()
             part = "" if filled >= qty - 1e-12 else f" (partial: {filled:g} of {qty:g})"
             msg = (f"{'EXPLORE ' if exploration else ''}{side.upper()} {filled:g}{part} @ {entry} | ref {ref} slip {slip:+.1f}bp "
                    f"| TP {tp_live} SL {sl_live} ({protection})")
@@ -323,21 +345,30 @@ class Executor:
                 return last
         return last
 
-    async def _anchor_bracket(self, symbol: str, side: str, entry: float, tp: float, sl: float, tick: float) -> tuple[str, float, float]:
+    async def _mark(self, symbol: str) -> float:
+        t = self.price_fn(symbol) if self.price_fn else {}
+        if t.get("markPrice") and time.time() - (t.get("ts") or 0) < 5:
+            return _f(t["markPrice"])
+        return _f((await self.client.ticker(symbol)).get("markPrice"))
+
+    async def _anchor_bracket(self, symbol: str, side: str, entry: float, tp: float | None, sl: float, tick: float,
+                              trigger_by: str | None = None) -> tuple[str, float, float]:
+        """`entry` is the reference the levels must sit around (the fill, or the mark for a mark-triggered backstop)."""
+        trigger_by = trigger_by or self.s.tpsl_trigger
         """Move TP/SL to sit around the actual entry and confirm the stop is live.
         Returns (protection, tp_live, sl_live); protection is 'flattened' or 'gone' on failure/early exit."""
         buy = side == "long"
         protection = "anchored"
         try:
-            await self.client.set_trading_stop(symbol, take_profit=_fmt(tp, tick), stop_loss=_fmt(sl, tick), trigger_by=self.s.tpsl_trigger)
+            await self.client.set_trading_stop(symbol, take_profit=_fmt(tp, tick) if tp else None, stop_loss=_fmt(sl, tick), trigger_by=trigger_by)
         except BybitError as exc:
             if exc.ret_code != 34040:  # 34040 = not modified, already equal
                 # Usually the mark has already moved past one of the levels (Bybit rejects a stop on
                 # the wrong side of the mark). Decide from the mark instead of keeping a bad bracket.
                 tk = await self.client.ticker(symbol)
-                mark = _f(tk.get("markPrice" if self.s.tpsl_trigger == "MarkPrice" else "lastPrice"))
+                mark = _f(tk.get("markPrice" if trigger_by == "MarkPrice" else "lastPrice"))
                 through_stop = mark <= sl if buy else mark >= sl
-                through_target = mark >= tp if buy else mark <= tp
+                through_target = bool(tp) and (mark >= tp if buy else mark <= tp)
                 reason = "stop_on_entry" if through_stop else "target_on_entry" if through_target else None
                 await self.sync()
                 if not self.position(symbol):
@@ -351,6 +382,8 @@ class Executor:
         if not pos:
             return "gone", tp, sl
         sl_live, tp_live = _f(pos.get("stopLoss")), _f(pos.get("takeProfit"))
+        if not tp:
+            tp_live = 0.0  # managed mode: no exchange TP expected
         stop_ok = sl_live > 0 and (sl_live < entry if buy else sl_live > entry)
         target_ok = tp_live <= 0 or (tp_live > entry if buy else tp_live < entry)
         if not (stop_ok and target_ok):
@@ -360,10 +393,44 @@ class Executor:
             return "flattened", tp_live, sl_live
         return protection, tp_live, sl_live
 
-    async def _flatten(self, symbol: str, pos: dict[str, Any], reason: str) -> None:
-        side = "sell" if pos["side"] == "Buy" else "buy"
-        await self.client.market_order(symbol, side, pos["size"], link_id=f"ctb-x-{reason[:6]}-{uuid.uuid4().hex[:8]}", reduce_only=True)
+    async def _flatten(self, symbol: str, pos: dict[str, Any], reason: str) -> int:
+        """Exit with reduce-only IOC limits capped a few bp past the best price, widening by
+        exit_chase_step_bp per step up to exit_chase_max_bp, then a market order as a last resort.
+        Each step takes only the liquidity inside its cap, so a thin book costs bounded, measured
+        slippage instead of whatever a market order happens to sweep. Returns the steps used."""
+        inst = self.instruments.get(symbol) or {}
+        tick, step_q = inst.get("tick_size", 0.0001), inst.get("qty_step", 0.001)
+        sell = pos["side"] == "Buy"
+        steps, bp = 0, 0.0
+        size = _f(pos["size"])
+        while size > 0:
+            steps += 1
+            bp = min(bp + self.s.exit_chase_step_bp, self.s.exit_chase_max_bp)
+            link = f"ctb-x-{reason[:6]}-{uuid.uuid4().hex[:8]}"
+            book = await self.client.orderbook(symbol, 50)
+            levels = book["bids"] if sell else book["asks"]
+            try:
+                if levels and bp < self.s.exit_chase_max_bp:
+                    best = levels[0][0]
+                    raw = best * (1 - bp / 10000) if sell else best * (1 + bp / 10000)
+                    cap = round((math.floor(raw / tick + 1e-9) if sell else math.ceil(raw / tick - 1e-9)) * tick, 10)
+                    await self.client.market_order(symbol, "sell" if sell else "buy", _fmt(size, step_q), link_id=link,
+                                                   reduce_only=True, limit_price=_fmt(cap, tick))
+                else:
+                    await self.client.market_order(symbol, "sell" if sell else "buy", _fmt(size, step_q), link_id=link, reduce_only=True)
+            except BybitError as exc:
+                if exc.ret_code in (110017, 110025):  # position already zero (filled / closed elsewhere)
+                    break
+                raise
+            o = await self._wait_order(symbol, link, timeout_s=2.0)
+            size = max(0.0, size - _f((o or {}).get("cumExecQty")))
+            if size > 0:  # confirm against the position (it can also have been reduced by the target)
+                live = [p for p in await self.client.positions() if p["symbol"] == symbol]
+                size = min(size, _f(live[0]["size"])) if live else 0.0
+            if steps >= 40:
+                break
         await self.sync()
+        return steps
 
     async def close(self, symbol: str, reason: str, *, locked: bool = False) -> bool:
         async def _do() -> bool:
@@ -371,10 +438,18 @@ class Executor:
             pos = self.position(symbol)
             if not pos:
                 return False
-            t = self.db.one("SELECT id FROM trades WHERE symbol=? AND status='open' ORDER BY id DESC LIMIT 1", (symbol,))
+            t = self.db.one("SELECT id, tp_order_id FROM trades WHERE symbol=? AND status='open' ORDER BY id DESC LIMIT 1", (symbol,))
             if t:
                 self.db.update("trades", t["id"], {"close_reason": reason})
-            await self._flatten(symbol, pos, reason)
+                if t.get("tp_order_id"):
+                    await self.client.cancel_order(symbol, t["tp_order_id"])
+            self._exiting.add(symbol)
+            try:
+                steps = await self._flatten(symbol, pos, reason)
+            finally:
+                self._exiting.discard(symbol)
+            if t:
+                self.db.update("trades", t["id"], {"exit_steps": steps})
             self.emit("event", self.db.event("trade", "close_requested", f"closing {symbol}: {reason}", symbol))
             return True
 
@@ -414,6 +489,10 @@ class Executor:
 
     async def _check_closes(self, *, time_stops: bool = True) -> None:
         live = {p["symbol"]: p for p in self.positions}
+        self._refresh_managed()
+        if self.price_fn:  # fallback if the testnet ticker stream missed a move
+            for sym in list(self._managed):
+                await self.on_testnet_tick(sym, self.price_fn(sym))
         for t in self.db.query("SELECT * FROM trades WHERE status='opening' AND opened_ts < ?", (time.time() - 20,)):
             await self.resolve_opening(t)
         for t in self.db.query("SELECT * FROM trades WHERE status='open'"):
@@ -500,6 +579,49 @@ class Executor:
                                          + (f", exit slip {exit_slip:+.1f}bp" if exit_slip is not None else ""), t["symbol"]))
         self.emit("trade", {"id": t["id"]})
         return True
+
+    # ------------------------------------------------------------------ managed exits
+    async def _arm_managed(self, trade_id: int, symbol: str, side: str, entry: float, qty: float, tp: float, sl: float,
+                           backstop: float, tick: float, step: float, protection: str) -> tuple[str, float, float]:
+        """Rest the take-profit as a reduce-only limit and arm the watched stop."""
+        buy = side == "long"
+        self.db.update("trades", trade_id, {"tp_price": tp, "sl_price": sl, "backstop_price": backstop})
+        t = self.price_fn(symbol) if self.price_fn else {}
+        exit_px = _f(t.get("bid1Price" if buy else "ask1Price"))
+        if exit_px and (exit_px <= sl if buy else exit_px >= sl):
+            await self.close(symbol, "stop_on_entry", locked=True)
+            return "gone", tp, sl
+        try:
+            o = await self.client.limit_order(symbol, "sell" if buy else "buy", _fmt(qty, step), _fmt(tp, tick),
+                                              link_id=f"ctb-tp-{trade_id}-{uuid.uuid4().hex[:6]}")
+            self.db.update("trades", trade_id, {"tp_order_id": (o or {}).get("orderId")})
+        except BybitError as exc:
+            self.emit("event", self.db.event("warn", "tp_order_failed", f"target limit not placed ({exc}); stop still managed", symbol))
+            protection += "+no_tp"
+        return protection + "+managed", tp, sl
+
+    def _refresh_managed(self) -> None:
+        rows = self.db.query("SELECT id, symbol, side, sl_price, tp_price FROM trades WHERE status='open' AND exit_mode='managed'")
+        self._managed = {r["symbol"]: r for r in rows}
+
+    async def on_testnet_tick(self, symbol: str, t: dict[str, Any]) -> None:
+        """Trip the managed stop on the executable side of the testnet book."""
+        m = self._managed.get(symbol)
+        if not m or symbol in self._exiting or self.lock(symbol).locked():
+            return
+        buy = m["side"] == "long"
+        px = _f(t.get("bid1Price" if buy else "ask1Price"))
+        if not px or not (px <= m["sl_price"] if buy else px >= m["sl_price"]):
+            return
+        self._exiting.add(symbol)
+        try:
+            self.db.update("trades", m["id"], {"stop_trigger_px": px, "stop_trigger_ts": time.time()})
+            self.emit("event", self.db.event("trade", "stop_triggered", f"managed stop {m['sl_price']} hit (testnet {'bid' if buy else 'ask'} {px}); exiting with capped IOC", symbol))
+            self._exiting.discard(symbol)  # close() manages the flag itself
+            await self.close(symbol, "stop_loss")
+        finally:
+            self._exiting.discard(symbol)
+            self._refresh_managed()
 
     def account_view(self) -> dict[str, Any]:
         return {

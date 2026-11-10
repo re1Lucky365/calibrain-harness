@@ -158,8 +158,24 @@ def execution_quality(trades: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None, decision_tf: str | None = None) -> dict[str, Any]:
+def binary_block(name: str, rows: list[tuple[float, bool]]) -> dict[str, Any]:
+    if not rows:
+        return {"n": 0}
+    base = statistics.fmean(1.0 if y else 0.0 for _, y in rows)
+    bm = statistics.fmean((p - (1.0 if y else 0.0)) ** 2 for p, y in rows)
+    bc = statistics.fmean((base - (1.0 if y else 0.0)) ** 2 for _, y in rows)
+    return {"name": name, "n": len(rows), "brier": _r4(bm), "brier_climatology": _r4(bc),
+            "skill_vs_climatology": _r4(1 - bm / bc) if bc else None, "auc": _r4(auc([p for p, _ in rows], [y for _, y in rows])),
+            "base_rate": _r4(base), "mean_predicted": _r4(statistics.fmean(p for p, _ in rows)),
+            "calibration": calibration([p for p, _ in rows], [y for _, y in rows])}
+
+
+def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None, decision_tf: str | None = None,
+            qset: str | None = None) -> dict[str, Any]:
     where, params = ["probe IS NULL"], []
+    if qset:
+        where.append("qset_version LIKE ?")
+        params.append(qset + "%")
     if decision_tf:
         where.append("decision_tf=?")
         params.append(decision_tf)
@@ -171,8 +187,8 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
         params.append(since_ts)
     w = " AND ".join(where)
     decs = db.query(f"SELECT id, ts, symbol, parsed_json, issues_json, usage_json, latency_ms, attempts, error_kind, error_msg, "
-                    f"decision_json, action, label_json, sl_bp, tp_bp, model_meta_json, request_bytes FROM decisions WHERE {w} ORDER BY ts", params)
-    out: dict[str, Any] = {"generated_from": {"decisions": len(decs), "symbol": symbol, "decision_tf": decision_tf}}
+                    f"decision_json, action, label_json, sl_bp, tp_bp, model_meta_json, request_bytes, qset_version FROM decisions WHERE {w} ORDER BY ts", params)
+    out: dict[str, Any] = {"generated_from": {"decisions": len(decs), "symbol": symbol, "decision_tf": decision_tf, "qset": qset}}
 
     # ---------------- ops
     ok = [d for d in decs if not d["error_kind"]]
@@ -248,7 +264,18 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
         blocks["mean_reversion"] = {"n": len(mr), "brier": _r4(bm), "brier_climatology": _r4(bc), "skill_vs_climatology": _r4(1 - bm / bc) if bc else None,
                                     "auc": _r4(auc([p for p, _ in mr], [y for _, y in mr])), "base_rate": _r4(base),
                                     "calibration": calibration([p for p, _ in mr], [y for _, y in mr])}
+    dr = [(d["parsed_json"]["direction"]["p"], d["label_json"]["return_pct"] > 0) for d in lab if "direction" in d["parsed_json"]]
+    if dr:
+        blocks["direction"] = binary_block("direction (price higher at horizon)", dr)
+    bmv = [(d["parsed_json"]["big_move"]["p"], d["label_json"]["max_up_pct"] >= d["sl_bp"] / 100 or -d["label_json"]["max_down_pct"] >= d["sl_bp"] / 100)
+           for d in lab if "big_move" in d["parsed_json"]]
+    if bmv:
+        blocks["big_move"] = binary_block("big_move (>= 1 stop either way)", bmv)
     out["model_quality"] = blocks
+
+    # ---------------- v2: did Kairos add information beyond the base rates it was given?
+    from ..calibration import CALIBRATED, fit, rows_for
+    out["vs_base_rates"] = {q: r for q in CALIBRATED if (r := fit(rows_for(q, lab)))["n"]}
 
     # ---------------- does predicted EV rank realised R?  (the money question)
     ev_rows = []

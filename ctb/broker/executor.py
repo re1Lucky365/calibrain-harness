@@ -30,6 +30,7 @@ from .bybit_rest import BybitError, BybitTestnet
 log = logging.getLogger("ctb.exec")
 
 TERMINAL_ORDER_STATES = {"Filled", "PartiallyFilledCanceled", "Cancelled", "Rejected", "Deactivated"}
+MAINNET_STALE_S = 10  # older mainnet data than this -> managed stop falls back to the testnet price
 CLOSE_GRACE_S = 90  # how long to wait for Bybit to post every closed-P&L row of an exit
 
 
@@ -141,6 +142,10 @@ class Executor:
         self.price_fn: Callable[[str], dict[str, Any]] | None = None  # testnet ticker, attached by the engine
         self._managed: dict[str, dict[str, Any]] = {}  # symbol -> open managed trade (stop watch)
         self._exiting: set[str] = set()
+        self._stop_fired: set[int] = set()  # trade ids whose managed stop already fired (fire once)
+        self._dislocation_noted: set[int] = set()
+        self.mainnet_fn: Callable[[str], dict[str, Any]] | None = None  # mainnet ticker, attached by the engine
+        self.mainnet_age_fn: Callable[[str], float] | None = None  # time of the last mainnet update
         self.run_id_fn: Callable[[], int | None] = lambda: None  # attached by the engine
 
     async def start(self) -> None:
@@ -503,9 +508,8 @@ class Executor:
     async def _check_closes(self, *, time_stops: bool = True) -> None:
         live = {p["symbol"]: p for p in self.positions}
         self._refresh_managed()
-        if self.price_fn:  # fallback if the testnet ticker stream missed a move
-            for sym in list(self._managed):
-                await self.on_testnet_tick(sym, self.price_fn(sym))
+        for sym in list(self._managed):  # fallback if a stream missed a move
+            await self.check_stop(sym)
         for t in self.db.query("SELECT * FROM trades WHERE status='opening' AND opened_ts < ?", (time.time() - 20,)):
             await self.resolve_opening(t)
         for t in self.db.query("SELECT * FROM trades WHERE status='open'"):
@@ -614,22 +618,58 @@ class Executor:
         return protection + "+managed", tp, sl
 
     def _refresh_managed(self) -> None:
-        rows = self.db.query("SELECT id, symbol, side, sl_price, tp_price FROM trades WHERE status='open' AND exit_mode='managed'")
+        rows = self.db.query("SELECT id, symbol, side, sl_price, tp_price, decision_price, planned_sl_bp FROM trades "
+                             "WHERE status='open' AND exit_mode='managed'")
+        for r in rows:
+            # the same stop distance, measured on mainnet from the mainnet price the decision was made on
+            sign = 1 if r["side"] == "long" else -1
+            r["mainnet_sl"] = (r["decision_price"] * (1 - sign * r["planned_sl_bp"] / 10000)
+                               if r.get("decision_price") and r.get("planned_sl_bp") else None)
         self._managed = {r["symbol"]: r for r in rows}
 
     async def on_testnet_tick(self, symbol: str, t: dict[str, Any]) -> None:
-        """Trip the managed stop on the executable side of the testnet book."""
+        await self.check_stop(symbol)
+
+    async def check_stop(self, symbol: str) -> None:
+        """Trip the managed stop when MAINNET's executable price (bid for a long, ask for a short)
+        crosses the stop, measured from the mainnet decision price. Mainnet is the market Kairos is
+        asked about and scored against; the testnet book can dislocate on its own (10 Nov: testnet
+        XRP fell 4.4% in a minute while mainnet rose), and selling into that hole is not a stop.
+
+        A testnet-only crossing is logged once and held; the exchange backstop (mark price, which
+        follows mainnet) still protects the position. If mainnet data is stale (> MAINNET_STALE_S),
+        the testnet price is used so protection never lapses."""
         m = self._managed.get(symbol)
-        if not m or symbol in self._exiting or self.lock(symbol).locked():
+        if not m or m["id"] in self._stop_fired or symbol in self._exiting or self.lock(symbol).locked():
             return
+        if not self.position(symbol):
+            return  # already flat (target filled or exit done); booking happens in reconcile
         buy = m["side"] == "long"
-        px = _f(t.get("bid1Price" if buy else "ask1Price"))
-        if not px or not (px <= m["sl_price"] if buy else px >= m["sl_price"]):
+        side_key = "bid1Price" if buy else "ask1Price"
+        tn = _f((self.price_fn(symbol) if self.price_fn else {}).get(side_key))
+        mn_t = self.mainnet_fn(symbol) if self.mainnet_fn else {}
+        mn = _f(mn_t.get(side_key)) or _f(mn_t.get("lastPrice"))
+        mn_fresh = bool(mn) and time.time() - (self.mainnet_age_fn(symbol) if self.mainnet_age_fn else 1e9) < MAINNET_STALE_S
+        crossed = lambda px, lvl: bool(px and lvl) and (px <= lvl if buy else px >= lvl)  # noqa: E731
+        tn_hit = crossed(tn, m["sl_price"])
+        if mn_fresh and m.get("mainnet_sl"):
+            hit, basis, px = crossed(mn, m["mainnet_sl"]), "mainnet", mn
+            if tn_hit and not hit and m["id"] not in self._dislocation_noted:
+                self._dislocation_noted.add(m["id"])
+                self.emit("event", self.db.event(
+                    "warn", "testnet_dislocation",
+                    f"testnet {'bid' if buy else 'ask'} {tn} is through the stop {m['sl_price']} but mainnet {mn} is not "
+                    f"(mainnet stop {m['mainnet_sl']:.6g}); holding, mark-price backstop active", symbol))
+        else:
+            hit, basis, px = tn_hit, "testnet (mainnet data stale)", tn
+        if not hit:
             return
+        self._stop_fired.add(m["id"])
         self._exiting.add(symbol)
         try:
             self.db.update("trades", m["id"], {"stop_trigger_px": px, "stop_trigger_ts": time.time()})
-            self.emit("event", self.db.event("trade", "stop_triggered", f"managed stop {m['sl_price']} hit (testnet {'bid' if buy else 'ask'} {px}); exiting with capped IOC", symbol))
+            self.emit("event", self.db.event("trade", "stop_triggered",
+                                             f"managed stop hit on {basis} {'bid' if buy else 'ask'} {px} (testnet {tn}); exiting with capped IOC", symbol))
             self._exiting.discard(symbol)  # close() manages the flag itself
             await self.close(symbol, "stop_loss")
         finally:

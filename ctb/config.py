@@ -107,6 +107,7 @@ class Settings:
     kairos_model: str = "DMIND/Kairos"
     kairos_timeout_s: float = _f("CTB_KAIROS_TIMEOUT_S", 120)
     kairos_max_requests_per_hour: int = _i("CTB_KAIROS_MAX_RPH", 120)
+    kairos_concurrency: int = _i("CTB_KAIROS_CONCURRENCY", 6)  # simultaneous requests at a bar close
     kairos_news_enabled: bool = _b("CTB_KAIROS_NEWS", True)
     kairos_news_max_per_hour: int = _i("CTB_KAIROS_NEWS_MAX_RPH", 20)
 
@@ -119,6 +120,7 @@ class Settings:
     # --- policy ---
     min_edge_r: float = _f("CTB_MIN_EDGE_R", 0.15)  # required EV in R units after costs
     min_setup_quality: float = _f("CTB_MIN_SETUP_QUALITY", 1.5)  # score scale 0..4
+    min_direction_margin: float = _f("CTB_MIN_DIRECTION_MARGIN", 0.03)  # long needs calibrated P(up) >= 0.5 + margin
     taker_fee_bp: float = _f("CTB_TAKER_FEE_BP", 5.5)
     slippage_bp: float = _f("CTB_SLIPPAGE_BP", 2.0)
     allow_short: bool = _b("CTB_ALLOW_SHORT", True)
@@ -144,6 +146,9 @@ class Settings:
     risk_per_trade_pct: float = _f("CTB_RISK_PER_TRADE_PCT", 0.5)
     max_leverage: int = _i("CTB_MAX_LEVERAGE", 3)
     max_positions: int = _i("CTB_MAX_POSITIONS", 3)
+    # portfolio caps: more symbols means more correlated positions (alts move with BTC)
+    max_open_risk_pct: float = _f("CTB_MAX_OPEN_RISK_PCT", 2.0)  # sum of open stop-risk, % of equity
+    max_same_side: int = _i("CTB_MAX_SAME_SIDE", 4)  # open positions in one direction
     max_notional_usdt: float = _f("CTB_MAX_NOTIONAL_USDT", 5000)
     daily_loss_limit_pct: float = _f("CTB_DAILY_LOSS_LIMIT_PCT", 3.0)
     max_venue_divergence_bp: float = _f("CTB_MAX_VENUE_DIVERGENCE_BP", 150)
@@ -213,6 +218,9 @@ class Settings:
             "risk_per_trade_pct": self.risk_per_trade_pct,
             "max_leverage": self.max_leverage,
             "max_positions": self.max_positions,
+            "max_open_risk_pct": self.max_open_risk_pct,
+            "max_same_side": self.max_same_side,
+            "min_direction_margin": self.min_direction_margin,
             "max_notional_usdt": self.max_notional_usdt,
             "daily_loss_limit_pct": self.daily_loss_limit_pct,
             "kairos_base_url": self.kairos_base_url,

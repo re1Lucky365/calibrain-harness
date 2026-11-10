@@ -75,7 +75,7 @@ of options, such as **Kairos**, **Jev** and similar models. Right now only **Kai
 Requirements: Python 3.12, Node.js 20+ with npm, a Kairos API key and Bybit **testnet** API keys.
 
 ```bash
-git clone https://github.com/zadescoxp/classifier-trading-terminal.git calibrain
+git clone https://github.com/zadescoxp/calibrain.git
 cd calibrain
 
 # 1. Python service (data, model calls, execution, API)

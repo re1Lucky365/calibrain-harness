@@ -122,6 +122,12 @@ TRADE_COLUMNS = {
     "exit_fills": "INTEGER",
     "fills_json": "TEXT",
     "close_notes": "TEXT",
+    "exit_mode": "TEXT",         # managed | exchange
+    "tp_order_id": "TEXT",       # resting reduce-only limit at the target (managed mode)
+    "backstop_price": "REAL",    # exchange-side stop kept beyond the managed stop
+    "stop_trigger_px": "REAL",   # testnet bid/ask that tripped the managed stop
+    "stop_trigger_ts": "REAL",
+    "exit_steps": "INTEGER",     # IOC chase steps used to get flat
 }
 
 JSON_COLS = {"state_json", "questions_json", "answers_json", "parsed_json", "issues_json", "usage_json",

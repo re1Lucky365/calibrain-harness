@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from .engine import Engine
 from .evaluation import metrics as metrics_mod
 from .evaluation import report as report_mod
 from .market.store import TIMEFRAMES
+from . import universe as universe_mod
 
 log = logging.getLogger("ctb.server")
 WEB = ROOT / "web"
@@ -122,7 +125,7 @@ def make_app(engine: Engine) -> web.Application:
         limit = min(int(req.query.get("limit", 100)), 1000)
         where = "probe IS NULL" + (" AND symbol=?" if sym else "")
         rows = engine.db.query(f"SELECT id, ts, symbol, action, decision_json, latency_ms, error_kind, error_msg, issues_json, parsed_json, "
-                               f"price, sl_bp, tp_bp, label_json, probe FROM decisions WHERE {where} ORDER BY id DESC LIMIT ?",
+                               f"price, sl_bp, tp_bp, label_json, probe, qset_version FROM decisions WHERE {where} ORDER BY id DESC LIMIT ?",
                                ([sym] if sym else []) + [limit])
         return j([engine._decision_view(r) for r in rows])
 
@@ -153,8 +156,11 @@ def make_app(engine: Engine) -> web.Application:
         sym = req.query.get("symbol") or None
         hours = req.query.get("hours")
         tf = req.query.get("tf") or None
+        qset = req.query.get("qset") or None
         since = time.time() - float(hours) * 3600 if hours else None
-        m = await asyncio.to_thread(metrics_mod.compute, engine.db, symbol=sym, since_ts=since, decision_tf=tf)
+        m = await asyncio.to_thread(metrics_mod.compute, engine.db, symbol=sym, since_ts=since, decision_tf=tf, qset=qset)
+        m["calibration_weights"] = {"weights": engine.calibrator.weights, "fitted_at": engine.calibrator.fitted_at,
+                                    "report": engine.calibrator.report}
         m["observations"] = report_mod.observations(m)
         return j(m)
 
@@ -370,6 +376,51 @@ def make_app(engine: Engine) -> web.Application:
             engine.subscribers.discard(q)
         return resp
 
+    # ---------------------------------------------------------------- symbol universe
+    @routes.get("/api/universe")
+    async def universe(_: web.Request) -> web.Response:
+        cands = await universe_mod.candidates(engine.session, engine.store.context.get("universe_all", []), s.symbols)
+        per_sym = s.required_rph(probe_rate=engine.probe_rate) / max(1, len(s.symbols))
+        return j({"selected": s.symbols, "candidates": cands, "max_symbols": universe_mod.MAX_SYMBOLS,
+                  "budget_per_hour": s.kairos_max_requests_per_hour, "rph_per_symbol": round(per_sym, 2),
+                  "decision_tf": s.decision_tf, "thin_depth_usd": universe_mod.THIN_DEPTH_USD,
+                  "max_entry_slip_bp": s.max_entry_slip_bp})
+
+    @routes.post("/api/symbols")
+    async def set_symbols(req: web.Request) -> web.Response:
+        """Change the traded universe. Saved to .env, then the service restarts itself (~15 s) so
+        every feed, stream, store and instrument filter is rebuilt for the new list."""
+        body = await req.json()
+        syms = [str(x).strip().upper() for x in body.get("symbols") or []]
+        errs = await universe_mod.validate(engine.session, syms)
+        if errs:
+            return j({"error": "; ".join(errs)}, 400)
+        open_syms = {r["symbol"] for r in engine.db.query("SELECT symbol FROM trades WHERE status IN ('open','opening')")}
+        if dropped := sorted(open_syms - set(syms)):
+            return j({"error": f"{', '.join(dropped)} still has an open bot trade; close it (or wait for its exit) before removing it"}, 409)
+        minutes = s.decision_tf_minutes
+        need = int(round(len(syms) * (60 / minutes) * (1 + 3 * engine.probe_rate)))
+        updates = {"CTB_SYMBOLS": ",".join(syms)}
+        if need > s.kairos_max_requests_per_hour:
+            if not body.get("raise_budget"):
+                return j({"error": f"{len(syms)} symbols on {minutes}m bars need ~{need} Kairos requests/hour; the cap is "
+                                   f"{s.kairos_max_requests_per_hour}. Remove symbols, use a slower trading timeframe, or raise the cap.",
+                          "need": need}, 409)
+            updates["CTB_KAIROS_MAX_RPH"] = str(need)
+        save_env(updates)
+        resume = bool(s.trading_enabled)
+        engine.emit("event", engine.db.event("warn", "symbols", f"universe set to {len(syms)} symbols ({', '.join(syms)}); "
+                                             f"~{need} Kairos req/h; restarting{' (auto-trade resumes)' if resume else ''}"))
+
+        def reexec() -> None:
+            env = dict(os.environ)
+            if resume:
+                env["CTB_RESUME_TRADING"] = "1"  # a restart we asked for must not silently stop the test
+            os.execve(sys.executable, [sys.executable, "-m", "ctb.server"], env)
+
+        asyncio.get_running_loop().call_later(1.0, reexec)
+        return j({"ok": True, "symbols": syms, "need_rph": need, "restarting": True})
+
     @routes.get("/ws")
     async def ws_endpoint(req: web.Request) -> web.WebSocketResponse:
         """One socket per tab. Pushes engine events as they happen, plus market ticks, the order
@@ -469,6 +520,8 @@ def make_app(engine: Engine) -> web.Application:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = load_settings()
+    if os.environ.pop("CTB_RESUME_TRADING", None) == "1":
+        s.trading_enabled = True  # restart requested by the symbol picker while auto-trade was on
     engine = Engine(s)
     print(f"classifier-trading-bot dashboard: http://{s.host}:{s.port}  (venue: Bybit TESTNET, "
           f"kairos key {'set' if s.kairos_api_key else 'NOT set'}, trading {'ON' if s.trading_enabled else 'observe-only'})")

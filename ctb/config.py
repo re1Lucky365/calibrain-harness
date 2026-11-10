@@ -122,6 +122,10 @@ class Settings:
     taker_fee_bp: float = _f("CTB_TAKER_FEE_BP", 5.5)
     slippage_bp: float = _f("CTB_SLIPPAGE_BP", 2.0)
     allow_short: bool = _b("CTB_ALLOW_SHORT", True)
+    # entries are IOC limits at most this far past the best testnet price; unfilled size is dropped
+    max_entry_slip_bp: float = _f("CTB_MAX_ENTRY_SLIP_BP", 10)
+    tpsl_trigger: str = os.environ.get("CTB_TPSL_TRIGGER", "LastPrice")  # LastPrice | MarkPrice | IndexPrice
+    bar_settle_s: float = _f("CTB_BAR_SETTLE_S", 0.3)  # wait after a bar closes before building state
     trading_enabled: bool = _b("CTB_TRADING_ENABLED", False)  # start in observe-only
     # exploration: trade Kairos's preferred side even when the strict quality gates block it
     exploration_mode: bool = _b("CTB_EXPLORATION", False)
@@ -187,6 +191,8 @@ class Settings:
             "min_edge_r": self.min_edge_r,
             "min_setup_quality": self.min_setup_quality,
             "round_trip_cost_bp": self.round_trip_cost_bp,
+            "max_entry_slip_bp": self.max_entry_slip_bp,
+            "tpsl_trigger": self.tpsl_trigger,
             "allow_short": self.allow_short,
             "trading_enabled": self.trading_enabled,
             "exploration_mode": self.exploration_mode,

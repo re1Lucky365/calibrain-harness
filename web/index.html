@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Classifier Trading Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<!-- world clocks -->
+<div class="clocks" id="clocks"></div>
+
+<!-- command line -->
+<header class="cmdbar">
+  <div class="brand"><span class="brand-mark">CTT</span><span class="brand-name">CLASSIFIER TRADING TERMINAL</span></div>
+  <form class="cmd" id="cmdForm" autocomplete="off">
+    <span class="cmd-sec" id="cmdSec">BTCUSDT PERP</span>
+    <input id="cmd" spellcheck="false" placeholder="BTC · ETH · SOL · ASK · EVAL · KEYS · HELP">
+    <button class="go" type="submit">GO</button>
+  </form>
+  <div class="cmd-right">
+    <label class="arm explore" title="Exploration: trade Kairos's preferred side even when strict quality gates block it, at reduced risk (0.1% per trade). Safety gates still apply."><input type="checkbox" id="exploreToggle"><span class="arm-box"></span><span>EXPLORE</span></label>
+    <label class="arm" title="Allow the bot to place orders on your Bybit testnet account"><input type="checkbox" id="tradingToggle"><span class="arm-box"></span><span>AUTO-TRADE</span></label>
+    <button class="kbtn" id="keysBtn" title="API keys">KEYS</button>
+    <button class="kbtn red" id="killBtn" title="Close bot positions, cancel orders, stop trading">KILL</button>
+  </div>
+</header>
+
+<!-- function keys -->
+<nav class="fkeys" id="fkeys">
+  <button data-view="mon" class="on"><b>F1</b>MON</button>
+  <button data-view="eval"><b>F2</b>EVAL</button>
+  <button data-view="trades"><b>F3</b>TRADES</button>
+  <button data-view="news"><b>F4</b>NEWS</button>
+  <button data-view="log"><b>F5</b>LOG</button>
+  <span class="fk-spacer"></span>
+  <span class="tradetf" title="How often Kairos is asked and trades are decided. The chart buttons only change the view."><span class="tt-l">TRADE TF</span><span class="seg" id="tradeTfSeg"></span><span class="tt-h" id="tradeTfInfo"></span></span>
+  <span class="venue">VENUE <b>BYBIT TESTNET</b> · SIGNALS <b>BYBIT MAINNET</b> · MODEL <b>DMIND/KAIROS</b></span>
+</nav>
+
+<div id="alerts"></div>
+
+<!-- ================= MONITOR ================= -->
+<main class="view on" id="view-mon">
+  <div class="grid-mon">
+    <section class="pnl a-mon">
+      <div class="ph"><span class="code">MON</span>Perp monitor<span class="ph-r" id="monAge"></span></div>
+      <div class="pb tight" id="watch"></div>
+      <div class="ph sub"><span class="code">WEI</span>Cross-asset<span class="ph-r" id="macroAge"></span></div>
+      <div class="pb tight" id="macro"></div>
+    </section>
+
+    <section class="pnl a-chart">
+      <div class="ph"><span class="code">GP</span><span id="chartTitle">—</span>
+        <span class="seg" id="tfSeg"></span>
+        <span class="legend"><i style="--c:var(--amber)"></i>EMA20 <i style="--c:var(--s1)"></i>EMA50 <i class="tri"></i>Kairos</span>
+        <span class="ph-r" id="divergence"></span></div>
+      <div class="pb chart-wrap"><div id="chart"></div><div class="ohlc" id="ohlc"></div></div>
+    </section>
+
+    <section class="pnl a-kai">
+      <div class="ph"><span class="code">KRS</span>Kairos signal<span class="ph-r"><button class="mini" id="askNow">ASK</button><button class="mini" id="askProbe" title="Ask + repeat &amp; mirror consistency probes (3 extra requests)">+PRB</button></span></div>
+      <div class="pb scroll" id="kairos"></div>
+    </section>
+
+    <section class="pnl a-acct">
+      <div class="ph"><span class="code">PRTU</span>Account · testnet<span class="ph-r" id="acctAge"></span></div>
+      <div class="pb tight" id="account" style="flex:none"></div>
+      <div class="ph sub"><span class="code">PST</span>Positions</div>
+      <div class="pb tight scroll" id="positions"></div>
+    </section>
+
+    <section class="pnl a-perf">
+      <div class="ph"><span class="code">COMP</span>Relative perf · 24h<span class="ph-r" id="perfLegend"></span></div>
+      <div class="pb chart-wrap"><div id="perf"></div></div>
+    </section>
+
+    <section class="pnl a-map">
+      <div class="ph"><span class="code">IMAP</span>Perp market map · 24h %<span class="ph-r">size ∝ √turnover · top 40</span></div>
+      <div class="pb map-wrap" id="map"></div>
+    </section>
+
+    <section class="pnl a-book">
+      <div class="ph"><span class="code">DOM</span>Order book · mainnet<span class="ph-r" id="bookAge"></span></div>
+      <div class="pb tight ladder" id="book"></div>
+    </section>
+
+    <section class="pnl a-news">
+      <div class="ph"><span class="code">TOP</span>News<span class="ph-r">CoinDesk · Cointelegraph · Decrypt</span></div>
+      <div class="pb tight scroll" id="newsMini"></div>
+    </section>
+
+    <section class="pnl a-tape">
+      <div class="ph"><span class="code">ALRT</span>Liquidations &amp; block prints<span class="ph-r" id="tapeInfo"></span></div>
+      <div class="pb tight scroll" id="tape"></div>
+    </section>
+
+    <section class="pnl a-stats">
+      <div class="ph"><span class="code">DES</span><span id="statsTitle">Derivatives &amp; flow</span><span class="ph-r" id="stateSize"></span></div>
+      <div class="pb tight scroll" id="stats"></div>
+    </section>
+
+    <section class="pnl a-log">
+      <div class="ph"><span class="code">BLTR</span>Kairos decision blotter<span class="ph-r">click a row for the full request / response</span></div>
+      <div class="pb tight scroll" id="blotter"></div>
+    </section>
+  </div>
+</main>
+
+<!-- ================= EVALUATION ================= -->
+<main class="view" id="view-eval">
+  <div class="toolbar">
+    <span class="code">EVAL</span><b>Kairos model evaluation</b>
+    <select id="evalSymbol"><option value="">ALL SYMBOLS</option></select>
+    <select id="evalTf"><option value="">ALL TRADE TFs</option></select>
+    <select id="evalHours"><option value="">ALL TIME</option><option value="24">LAST 24H</option><option value="6">LAST 6H</option></select>
+    <button class="kbtn" id="evalRefresh">REFRESH</button>
+    <button class="kbtn amber" id="reportBtn">EXPORT MINARA REPORT</button>
+  </div>
+  <div class="strip" id="evalTiles"></div>
+  <div class="grid-eval">
+    <section class="pnl span2"><div class="ph"><span class="code">FIND</span>Findings</div><div class="pb"><ul id="observations" class="obs"></ul></div></section>
+    <section class="pnl"><div class="ph"><span class="code">CAL</span>Calibration · P(long target first)</div><div class="pb" id="calLong"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">CAL</span>Calibration · P(short target first)</div><div class="pb" id="calShort"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">EDGE</span>Realised R by predicted EV</div><div class="pb" id="evBuckets"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">PIT</span>Return distribution · PIT histogram</div><div class="pb" id="pit"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">SCOR</span>Per-question scores vs baselines</div><div class="pb tight" id="qTable"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">PRB</span>Consistency probes</div><div class="pb tight" id="consistency"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">OPS</span>Operations</div><div class="pb tight" id="ops"></div></section>
+    <section class="pnl"><div class="ph"><span class="code">PNL</span>Testnet trading · real fills &amp; fees</div><div class="pb tight" id="tradingStats"></div></section>
+    <section class="pnl span2"><div class="ph"><span class="code">RAW</span>Raw metrics</div><div class="pb"><details><summary>show JSON</summary><pre id="rawMetrics" class="code"></pre></details></div></section>
+  </div>
+</main>
+
+<main class="view" id="view-trades"><section class="pnl"><div class="ph"><span class="code">TRD</span>Bot trades · Bybit testnet</div><div class="pb tight scroll" id="tradesTable"></div></section></main>
+<main class="view" id="view-news">
+  <section class="pnl" style="margin-bottom:4px"><div class="ph"><span class="code">NRET</span>Kairos news_return forecasts<span class="ph-r">15m horizon · 7 bins scaled by round-trip cost c</span></div><div class="pb tight" id="newsForecasts"></div></section>
+  <section class="pnl"><div class="ph"><span class="code">TOP</span>Headlines</div><div class="pb tight" id="headlines"></div></section>
+</main>
+<main class="view" id="view-log"><section class="pnl"><div class="ph"><span class="code">LOG</span>System events</div><div class="pb tight" id="events"></div></section></main>
+
+<!-- status line -->
+<footer class="statusline" id="statusline"></footer>
+
+<dialog id="modal"><form method="dialog"><button class="kbtn close" aria-label="Close">ESC ✕</button></form><div id="modalBody"></div></dialog>
+
+<dialog id="keysModal" class="keys">
+  <form method="dialog"><button class="kbtn close" aria-label="Close">ESC ✕</button></form>
+  <div class="ph"><span class="code">KEYS</span>API credentials</div>
+  <p>Saved to <code>.env</code> in the project folder (gitignored, owner-only permissions), applied immediately. Keys are never sent back to the browser; only the last 4 characters are shown.</p>
+  <section class="keybox">
+    <div class="keyhead"><b>KAIROS · MINARA CLOUD</b><span id="kairosStatus"></span></div>
+    <p>Create a key at <a href="https://minara.cloud" target="_blank" rel="noopener">minara.cloud</a> in a <b>Kairos-enabled group</b>. A key in the <code>default</code> group may not have access to <code>DMIND/Kairos</code>.</p>
+    <label>API KEY<input id="kairosKey" type="password" autocomplete="off" spellcheck="false" placeholder="paste Kairos API key"></label>
+    <label>BASE URL (OPTIONAL)<input id="kairosUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://minara.cloud"></label>
+    <div class="keyactions"><button class="kbtn amber" id="kairosSave" type="button">SAVE &amp; TEST</button><button class="kbtn" id="kairosTest" type="button">TEST CURRENT KEY</button><span class="muted">A test uses 1 request from the hourly budget.</span></div>
+    <div id="kairosMsg" class="keymsg"></div>
+  </section>
+  <section class="keybox">
+    <div class="keyhead"><b>BYBIT · TESTNET</b><span id="bybitStatus"></span></div>
+    <p>Create at <a href="https://testnet.bybit.com/app/user/api-management" target="_blank" rel="noopener">testnet.bybit.com → API management</a>. Permissions: <b>Contract → Orders + Positions</b>. Leave <b>withdrawals off</b>. Mainnet keys are rejected because the bot only talks to the testnet.</p>
+    <label>API KEY<input id="bybitKey" type="password" autocomplete="off" spellcheck="false" placeholder="testnet API key"></label>
+    <label>API SECRET<input id="bybitSecret" type="password" autocomplete="off" spellcheck="false" placeholder="testnet API secret"></label>
+    <div class="keyactions"><button class="kbtn amber" id="bybitSave" type="button">VERIFY &amp; SAVE</button><span class="muted">Checked against your testnet wallet before saving. Auto-trade switches off.</span></div>
+    <div id="bybitMsg" class="keymsg"></div>
+  </section>
+</dialog>
+
+<dialog id="helpModal" class="keys"><form method="dialog"><button class="kbtn close">ESC ✕</button></form>
+  <div class="ph"><span class="code">HELP</span>Commands</div>
+  <table class="t" style="margin-top:6px"><tbody>
+    <tr><td class="amb">BTC · ETH · SOL …</td><td class="wrap">Load a symbol into chart, Kairos, book and stats</td></tr>
+    <tr><td class="amb">ASK</td><td class="wrap">Ask Kairos now for the loaded symbol (1 request)</td></tr>
+    <tr><td class="amb">PRB</td><td class="wrap">Ask + repeat &amp; mirror consistency probes (4 requests)</td></tr>
+    <tr><td class="amb">1M 5M 15M 1H 4H</td><td class="wrap">Chart timeframe (view only)</td></tr>
+    <tr><td class="amb">POS 10</td><td class="wrap">Max open positions (1–50); new entries only</td></tr>
+    <tr><td class="amb">TF 1M · TF 5M · TF 15M · TF 1H</td><td class="wrap">Trading timeframe: how often Kairos decides and trades</td></tr>
+    <tr><td class="amb">MON EVAL TRD NEWS LOG</td><td class="wrap">Switch screen (also F1–F5)</td></tr>
+    <tr><td class="amb">KEYS · HELP</td><td class="wrap">API credentials · this list</td></tr>
+    <tr><td class="amb">/</td><td class="wrap">Focus the command line from anywhere</td></tr>
+  </tbody></table>
+</dialog>
+
+<dialog id="tfModal" class="keys"><form method="dialog"><button class="kbtn close">ESC ✕</button></form>
+  <div class="ph"><span class="code">TF</span>Switch trading timeframe</div>
+  <div id="tfBody" style="margin:8px 10px"></div>
+  <div class="keyactions" style="margin:8px 10px" id="tfActions"></div>
+</dialog>
+<div id="tip" class="tip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

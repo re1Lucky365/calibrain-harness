@@ -79,6 +79,48 @@ def bracket(st: SymbolState, s: Settings) -> dict[str, float] | None:
     return {"sl_bp": round(sl_bp, 1), "tp_bp": round(tp_bp, 1), "atr_pct": a, "reward_risk": round(tp_bp / sl_bp, 3)}
 
 
+BASE_RATE_MIN_WINDOWS = 60
+
+
+def base_rates(bars: list, horizon_bars: int, sl_bp: float, tp_bp: float) -> dict[str, Any] | None:
+    """Empirical frequencies of every labelled outcome for THIS bracket and horizon on the
+    instrument's own recent history (completed windows only: no look-ahead).
+
+    Each closed bar is a hypothetical entry at its close; the next `horizon_bars` bars are the path.
+    A bar touching target and stop together counts as stop first, as in the labeller. Laplace
+    smoothing keeps every probability inside (0, 1). This is the forecast a model with no specific
+    information should give, so it is both an anchor for Kairos and the baseline it must beat."""
+    from .evaluation.labeler import bracket_outcome, return_bin
+
+    n_win = len(bars) - horizon_bars - 1
+    if n_win < BASE_RATE_MIN_WINDOWS:
+        return None
+    cnt = {"long": {"target_first": 0, "stop_first": 0, "neither": 0}, "short": {"target_first": 0, "stop_first": 0, "neither": 0}}
+    bins = [0] * 7
+    up = move = 0
+    d = sl_bp / 10000
+    for i in range(n_win):
+        entry = bars[i].c
+        path = [(b.t, b.o, b.h, b.l, b.c) for b in bars[i + 1: i + 1 + horizon_bars]]
+        for side in ("long", "short"):
+            cnt[side][bracket_outcome(path, entry, side, tp_bp, sl_bp)["outcome"]] += 1
+        ret_pct = 100 * (path[-1][4] / entry - 1)
+        bins[return_bin(ret_pct, sl_bp)] += 1
+        up += ret_pct > 0
+        move += max(b[2] for b in path) >= entry * (1 + d) or min(b[3] for b in path) <= entry * (1 - d)
+    sm = lambda k, n, m: round((k + 1) / (n + m), 4)  # noqa: E731
+    span_h = (bars[-1].t - bars[0].t) / 3_600_000
+    return {
+        "lookback_hours": round(span_h, 1),
+        "windows": n_win,
+        "long_bracket": {k: sm(v, n_win, 3) for k, v in cnt["long"].items()},
+        "short_bracket": {k: sm(v, n_win, 3) for k, v in cnt["short"].items()},
+        "return_distribution": {f"bin_{i}": sm(b, n_win, 7) for i, b in enumerate(bins)},
+        "price_higher_at_horizon": sm(up, n_win, 2),
+        "moved_at_least_one_stop_either_way": sm(move, n_win, 2),
+    }
+
+
 def _oi_change(st: SymbolState, minutes: int) -> float | None:
     h = st.oi_history
     if len(h) < 2:
@@ -207,6 +249,15 @@ def build_state(store: MarketStore, symbol: str, s: Settings, *, position: dict[
     if position:
         state["open_position"] = position
 
+    base = base_rates(dec, s.horizon_bars, br["sl_bp"], br["tp_bp"])
+    if base:
+        state["historical_base_rates"] = {
+            "what_this_is": ("How often each outcome actually happened for this exact bracket and horizon on this instrument "
+                             f"over the last {base['lookback_hours']}h ({base['windows']} overlapping windows of {TF_LABEL.get(s.decision_tf, s.decision_tf)} bars). "
+                             "A forecast without specific evidence should be close to these frequencies."),
+            **{k: v for k, v in base.items() if k not in ("lookback_hours", "windows")},
+        }
+
     state["trade_plan"] = {
         "entry": "market order at last_price now",
         "long_stop_pct_below_entry": round(br["sl_bp"] / 100, 3),
@@ -236,6 +287,7 @@ def build_state(store: MarketStore, symbol: str, s: Settings, *, position: dict[
         "atr_pct": br["atr_pct"],
         "horizon_min": horizon_min,
         "cost_bp": s.round_trip_cost_bp,
+        "base_rates": base,
     }
     return state, meta
 
@@ -278,6 +330,14 @@ def mirror_state(state: dict[str, Any]) -> dict[str, Any]:
         return obj
 
     m = walk(state)
+    hb = state.get("historical_base_rates")
+    if hb:  # the mirrored market's history: long and short swap, up and down swap
+        m["historical_base_rates"] = {
+            **hb,
+            "long_bracket": dict(hb["short_bracket"]), "short_bracket": dict(hb["long_bracket"]),
+            "return_distribution": {f"bin_{i}": hb["return_distribution"][f"bin_{6 - i}"] for i in range(7)},
+            "price_higher_at_horizon": round(1 - hb["price_higher_at_horizon"], 4),
+        }
     m.pop("recent_headlines", None)  # text cannot be mirrored
     m.pop("open_position", None)
     m["last_price"] = state["last_price"]

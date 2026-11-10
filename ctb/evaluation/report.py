@@ -69,6 +69,16 @@ def observations(m: dict[str, Any]) -> list[str]:
                    "A large error means a directional bias that is independent of the evidence.")
     if cons.get("both_targets_above_50pct"):
         obs.append(f"Self-contradiction: in {cons['both_targets_above_50pct']} decisions the model gave >50% to BOTH the long target and the short target being hit first.")
+    tr = m.get("trading", {})
+    if tr.get("closed"):
+        obs.append(f"Testnet trading (from Bybit's own closed-P&L records): {tr['closed']} closed, net {tr['net_pnl_usdt']:+.2f} USDT "
+                   f"after {tr['fees_usdt']:.2f} USDT fees, win rate {_f(tr.get('win_rate'))}, mean {_f(tr.get('avg_r'))}R.")
+        ex = tr.get("execution") or {}
+        es, ss = ex.get("entry_slip_bp"), ex.get("stop_exit_slip_bp")
+        if es:
+            obs.append(f"Execution: entry slippage vs best testnet price mean {es['mean']}bp (p90 {es['p90']}bp, n={es['n']}); "
+                       + (f"stop exits filled {ss['mean']}bp past the trigger on average (worst {ss['max']}bp); " if ss else "")
+                       + f"mean fill ratio {_f(ex.get('fill_ratio_mean'))}; {ex.get('multi_fill_exits', 0)} exits filled in several pieces.")
     nq = m.get("news", {}).get("quality")
     if nq and nq.get("n", 0) >= 30:
         obs.append(f"news_return: RPS skill vs climatology {_f(nq.get('skill_vs_climatology'))}, Spearman(lean, realised) {_f(nq.get('spearman_lean_vs_return'))}, n={nq['n']}.")

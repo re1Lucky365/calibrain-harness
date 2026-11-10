@@ -35,20 +35,13 @@ export function Clocks() {
   );
 }
 
-/** The Calibrain mark, inline so it costs no request (same geometry as docs/brand/calibrain-mark.svg). */
+/** The Calibrain Harness mark, inline so it costs no request (same geometry as docs/brand/calibrain-harness-mark-dark.svg):
+ * a flat-capped C and the one calibrated point that closes it. */
 function BrandMark() {
   return (
-    <svg className="brand-svg" viewBox="0 0 128 128" width="22" height="22" aria-hidden="true">
-      <defs>
-        <linearGradient id="cbArc" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
-          <stop offset="0" stopColor="#FFC266" /><stop offset="0.55" stopColor="#FF9A2E" /><stop offset="1" stopColor="#F26B1D" />
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="124" height="124" rx="28" fill="#111113" stroke="#2a2a2e" strokeWidth="3" />
-      <path d="M 88.96 41.79 A 34 34 0 1 0 88.96 86.21" fill="none" stroke="url(#cbArc)" strokeWidth="11" strokeLinecap="round" />
-      <rect x="43" y="75" width="10" height="10" rx="2.5" fill="#fff" fillOpacity="0.5" />
-      <rect x="58" y="58" width="12" height="12" rx="3" fill="#fff" fillOpacity="0.82" />
-      <rect x="73" y="41" width="14" height="14" rx="3.5" fill="#FFB547" />
+    <svg className="brand-svg" viewBox="0 0 64 64" width="20" height="20" aria-hidden="true">
+      <path d="M 46.849 17.151 A 21 21 0 1 0 46.849 46.849" fill="none" stroke="#FFFFFF" strokeWidth="8" strokeLinecap="butt" />
+      <rect x="49" y="28" width="8" height="8" fill="#FF8A1F" />
     </svg>
   );
 }
@@ -113,9 +106,9 @@ export function CommandBar() {
 
   return (
     <header className="cmdbar">
-      <div className="brand" title="Calibrain · calibrated classifier trading (under development)">
+      <div className="brand" title="Calibrain Harness · forward-testing harness for classification models (under development)">
         <BrandMark />
-        <span className="brand-name">CALI<b>BRAIN</b></span>
+        <span className="brand-name">Calibrain <i>Harness</i></span>
         <span className="brand-tag">BETA</span>
       </div>
       <form className="cmd" autoComplete="off" onSubmit={onSubmit}>

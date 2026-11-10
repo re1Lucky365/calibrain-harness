@@ -288,3 +288,9 @@ dialog.keys { width: min(640px, 95vw); }
 .ladder .wall { color: var(--amber); font-size: 9px; font-weight: 600; margin-right: 6px; letter-spacing: .04em; }
 .pb.tight > .t td:first-child, .pb.tight > .t th:first-child { padding-left: 10px; }
 .pb.tight > .t td:last-child, .pb.tight > .t th:last-child { padding-right: 10px; }
+
+/* ---------- Calibrain brand */
+.brand .brand-svg { display: block; flex: none; }
+.brand .brand-name { font: 600 15px var(--cond); letter-spacing: .14em; color: var(--text); }
+.brand .brand-name b { color: var(--amber); font-weight: 700; }
+.brand .brand-tag { font: 600 9px var(--mono); color: var(--amber); border: 1px solid var(--amber-dim); padding: 0 4px; letter-spacing: .08em; }

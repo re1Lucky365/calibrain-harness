@@ -410,3 +410,19 @@ def test_managed_stop_needs_mainnet_confirmation(tmp_path):
     ex.mainnet_age_fn = lambda s: _t.time() - 60
     asyncio.run(ex.check_stop("XRPUSDT"))
     assert closes == ["stop_loss"]
+
+
+
+def test_calibration_is_fitted_per_trading_timeframe(tmp_path):
+    from ctb.calibration import MIN_FIT, PRIOR_W, Calibrator
+    from ctb.db import DB
+    db = DB(tmp_path / "t.db")
+    for i in range(MIN_FIT + 20):  # a useless 5m model: says 90% up, truth alternates, base rate knows 50/50
+        db.insert("decisions", {"ts": i, "symbol": "BTCUSDT", "qset_version": "perp-v2.0", "decision_tf": "5", "sl_bp": 50,
+                                "parsed_json": {"direction": {"p": 0.9}}, "decision_json": {"meta": {"base_rates": BASE}},
+                                "label_json": {"return_pct": 0.1 if i % 2 else -0.1, "max_up_pct": 0, "max_down_pct": 0}})
+    tf = {"v": "5"}
+    cal = Calibrator(db, tf_fn=lambda: tf["v"])
+    assert cal.refit()["direction"] == 0.0  # fitted: ignore the useless model on 5m
+    tf["v"] = "1"
+    assert cal.maybe_refit()["direction"] == PRIOR_W  # 1m has no history of its own: prior, not 5m's weight

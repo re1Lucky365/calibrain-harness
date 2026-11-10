@@ -379,11 +379,11 @@ def make_app(engine: Engine) -> web.Application:
     # ---------------------------------------------------------------- symbol universe
     @routes.get("/api/universe")
     async def universe(_: web.Request) -> web.Response:
-        cands = await universe_mod.candidates(engine.session, engine.store.context.get("universe_all", []), s.symbols)
+        cands = await universe_mod.candidates(engine.session, engine.store.context.get("universe_all", []), s.symbols, s.max_notional_usdt)
         per_sym = s.required_rph(probe_rate=engine.probe_rate) / max(1, len(s.symbols))
         return j({"selected": s.symbols, "candidates": cands, "max_symbols": universe_mod.MAX_SYMBOLS,
                   "budget_per_hour": s.kairos_max_requests_per_hour, "rph_per_symbol": round(per_sym, 2),
-                  "decision_tf": s.decision_tf, "thin_depth_usd": universe_mod.THIN_DEPTH_USD,
+                  "decision_tf": s.decision_tf, "thin_depth_usd": s.max_notional_usdt,
                   "max_entry_slip_bp": s.max_entry_slip_bp})
 
     @routes.post("/api/symbols")

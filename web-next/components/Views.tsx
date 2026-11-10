@@ -61,7 +61,8 @@ const dist = (d: any, unit = "bp") => (d ? `${sg(d.mean, 1)}${unit} mean · p90 
 
 export function EvalView() {
   const st = useStore((s) => s.ov?.settings);
-  const [f, setF] = useState({ symbol: "", tf: "", hours: "", qset: "perp-v2" });
+  const [f, setF] = useState({ symbol: "", tf: "", hours: "", qset: "", run: "" });
+  const runsData = useRuns(0);
   const [m, setM] = useState<any>(null);
   const load = useCallback(async () => {
     const q = new URLSearchParams();
@@ -69,6 +70,7 @@ export function EvalView() {
     if (f.symbol) q.set("symbol", f.symbol);
     if (f.hours) q.set("hours", f.hours);
     if (f.qset) q.set("qset", f.qset);
+    if (f.run) q.set("run", f.run);
     setM(await api("/api/metrics?" + q));
   }, [f]);
   useEffect(() => { load().catch(() => {}); }, [load]);
@@ -84,6 +86,7 @@ export function EvalView() {
       <span className="code">EVAL</span><b>Kairos model evaluation</b>
       <select value={f.symbol} onChange={(e) => setF({ ...f, symbol: e.target.value })}><option value="">ALL SYMBOLS</option>{st?.symbols.map((s: string) => <option key={s} value={s}>{s}</option>)}</select>
       <select value={f.tf} onChange={(e) => setF({ ...f, tf: e.target.value })}><option value="">ALL TRADE TFs</option>{st && Object.entries<any>(st.tf_profiles).map(([tf, p]) => <option key={tf} value={tf}>TRADE TF {p.label}</option>)}</select>
+      <select value={f.run} onChange={(e) => setF({ ...f, run: e.target.value })}><option value="">ALL RUNS</option>{runsData?.runs.map((r: any) => <option key={r.id} value={String(r.id)}>RUN {r.id}{r.current ? " (LIVE)" : ""}</option>)}</select>
       <select value={f.qset} onChange={(e) => setF({ ...f, qset: e.target.value })} data-tip="Question set: v2 adds base-rate anchoring, direction and big_move"><option value="perp-v2">QUESTIONS v2</option><option value="perp-v1">QUESTIONS v1</option><option value="">ALL QUESTION SETS</option></select>
       <select value={f.hours} onChange={(e) => setF({ ...f, hours: e.target.value })}><option value="">ALL TIME</option><option value="24">LAST 24H</option><option value="6">LAST 6H</option><option value="4">LAST 4H</option></select>
       <button className="kbtn" onClick={() => load()}>REFRESH</button>
@@ -177,18 +180,68 @@ export function EvalView() {
   );
 }
 
+const pct0 = (x: any) => (isNum(x) ? (100 * Number(x)).toFixed(0) + "%" : "—");
+const when = (r: any) => (r.started_ts ? `${dt(r.started_ts)} → ${r.ended_ts ? dt(r.ended_ts) : "now"}` : "—");
+
+function RunsTable({ runs, overall, sel, onSel }: { runs: any[]; overall: any; sel: number | null; onSel: (id: number | null) => void }) {
+  const row = (r: any, isAll = false) => {
+    const c = r.config_json || {};
+    return (
+      <tr key={isAll ? "all" : r.id} className={`click ${(isAll ? sel === null : sel === r.id) ? "sel" : ""}`} onClick={() => onSel(isAll ? null : r.id)}>
+        <td className="sym">{isAll ? "OVERALL" : `RUN ${r.id}`}{r.current && <> <span className="tag long">LIVE</span></>}</td>
+        <td className="wrap" style={{ maxWidth: 280 }}>{isAll ? "all runs combined" : r.name.replace(/^Run \d+ · /, "")}</td>
+        <td className="muted">{when(r)}</td>
+        <td>{isAll ? "—" : <>{c.qset || "—"} · {c.exploration_mode ? <span className="tag xp">EXPLORE</span> : <span className="tag amb">STRICT</span>} · {(c.symbols || []).length} sym</>}</td>
+        <td className="r">{r.decisions}</td>
+        <td className="r">{r.labelled}</td>
+        <td className="r">{r.closed}{r.open_trades ? <span className="muted"> +{r.open_trades} open</span> : ""}</td>
+        <td className={`r ${ud(r.net_pnl)}`}>{sg(r.net_pnl)}</td>
+        <td className="r">{fx(r.fees)}</td>
+        <td className="r">{pct0(r.win_rate)}</td>
+        <td className={`r ${ud(r.avg_r)}`}>{sg(r.avg_r, 2)}</td>
+        <td className="r">{fx(r.profit_factor, 2)}</td>
+        <td className="r">{isNum(r.entry_slip_bp) ? sg(r.entry_slip_bp, 1) : "—"}</td>
+        <td className="r">{isNum(r.stop_slip_bp) ? sg(r.stop_slip_bp, 1) : "—"}</td>
+        <td className="r" data-tip="Signals scored on mainnet labels (traded or not)">{r.strict_n ? `${r.strict_n} · ${sg(r.strict_r, 2)}R` : "0"} / {r.explore_n ? `${r.explore_n} · ${sg(r.explore_r, 2)}R` : "0"}</td>
+        <td className={`r ${ud(r.skill_long)}`}>{sg(r.skill_long, 2)} / {sg(r.skill_short, 2)}</td>
+        <td className={`r ${ud(r.vs_base_long)}`}>{sg(r.vs_base_long, 2)}</td>
+      </tr>
+    );
+  };
+  return (
+    <table className="t">
+      <thead><tr><th>Run</th><th>Setup</th><th>Period</th><th>Config</th><th className="r">Kairos req</th><th className="r">Labelled</th><th className="r">Trades</th>
+        <th className="r">Net PnL $</th><th className="r">Fees $</th><th className="r">Win</th><th className="r">Avg R</th><th className="r">PF</th>
+        <th className="r">Entry slip</th><th className="r">Stop slip</th><th className="r">Strict / explore signals</th><th className="r">Skill L / S</th><th className="r">vs base</th></tr></thead>
+      <tbody>{runs.map((r) => row(r))}{overall && row(overall, true)}</tbody>
+    </table>
+  );
+}
+
+export function useRuns(rev: number) {
+  const [data, setData] = useState<{ runs: any[]; overall: any } | null>(null);
+  useEffect(() => { api("/api/runs").then(setData).catch(() => {}); }, [rev]);
+  return data;
+}
+
 export function TradesView() {
   const rev = useStore((s) => s.rev.trades);
+  const [run, setRun] = useState<number | null>(null);
   const [ts, setTs] = useState<any[] | null>(null);
-  useEffect(() => { api<any[]>("/api/trades").then(setTs).catch(() => {}); }, [rev]);
+  const runs = useRuns(rev);
+  useEffect(() => { api<any[]>(run ? `/api/trades?run=${run}` : "/api/trades").then(setTs).catch(() => {}); }, [rev, run]);
   return (
     <main className="view on">
+      <section className="pnl" style={{ marginBottom: 4 }}>
+        <div className="ph"><span className="code">RUNS</span>Test runs · click a row to filter the trades below<span className="ph-r">PnL from Bybit closed-PnL · signals and skill from mainnet labels</span></div>
+        <div className="pb tight scroll">{runs ? <RunsTable runs={runs.runs} overall={runs.overall} sel={run} onSel={setRun} /> : <div className="empty">Loading runs…</div>}</div>
+      </section>
       <section className="pnl">
-        <div className="ph"><span className="code">TRD</span>Bot trades · Bybit testnet<span className="ph-r">P&amp;L, fees and exit price summed from every Bybit closed-PnL row</span></div>
+        <div className="ph"><span className="code">TRD</span>Bot trades · {run ? `Run ${run}` : "all runs"} · Bybit testnet<span className="ph-r">P&amp;L, fees and exit price summed from every Bybit closed-PnL row</span></div>
         <div className="pb tight scroll">
           {!ts ? <div className="empty">Loading…</div> : !ts.length ? <div className="empty">No trades yet. They appear once a Kairos key is set and AUTO-TRADE is on.</div> : (
             <table className="t">
-              <thead><tr><th>Opened</th><th>Sym</th><th>Side</th><th>Mode</th><th className="r">Qty (req)</th><th className="r">Ref</th><th className="r">Entry</th><th className="r">Slip bp</th><th className="r">TP</th><th className="r">SL</th>
+              <thead><tr><th>Run</th><th>Opened</th><th>Sym</th><th>Side</th><th>Mode</th><th className="r">Qty (req)</th><th className="r">Ref</th><th className="r">Entry</th><th className="r">Slip bp</th><th className="r">TP</th><th className="r">SL</th>
                 <th>Status</th><th>Exit</th><th className="r">Exit px</th><th className="r">Exit slip</th><th className="r">Fills</th><th className="r">PnL</th><th className="r">Fees</th><th className="r">R</th><th className="r">EV R</th><th>Dec</th></tr></thead>
               <tbody>
                 {ts.map((t) => {
@@ -197,7 +250,7 @@ export function TradesView() {
                   const partial = t.requested_qty && t.qty < t.requested_qty * (1 - 1e-9);
                   return (
                     <tr key={t.id}>
-                      <td className="muted">{dt(t.opened_ts)}</td><td className="sym">{short(t.symbol)}</td><td><span className={`tag ${t.side}`}>{t.side.toUpperCase()}</span></td>
+                      <td className="amb">{t.run_id ?? "—"}</td><td className="muted">{dt(t.opened_ts)}</td><td className="sym">{short(t.symbol)}</td><td><span className={`tag ${t.side}`}>{t.side.toUpperCase()}</span></td>
                       <td>{mode === "exploration" ? <span className="tag xp">EXPLORE</span> : mode === "strict" ? <span className="tag amb">STRICT</span> : ""}</td>
                       <td className="r">{t.qty}{partial && <span className="tag part" data-tip={`IOC filled ${t.qty} of ${t.requested_qty}`}> PART</span>}</td>
                       <td className="r muted">{t.ref_price ?? "—"}</td><td className="r">{t.entry_price ?? "—"}</td><td className={`r ${ud(-(t.entry_slip_bp ?? 0))}`}>{isNum(t.entry_slip_bp) ? sg(t.entry_slip_bp, 1) : "—"}</td>

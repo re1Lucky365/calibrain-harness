@@ -115,6 +115,11 @@ class Engine:
         self.executor.stream = self._private_stream
         self.executor.run_id_fn = lambda: self.run["id"]
         self.executor.price_fn = lambda sym: self.store[sym].testnet_ticker
+        self.executor.mainnet_fn = lambda sym: self.store[sym].ticker
+        self.executor.mainnet_age_fn = lambda sym: self.store[sym].last_update
+        if getattr(self, "_stop_task", None):
+            self._stop_task.cancel()
+        self._stop_task = asyncio.create_task(self._stop_watch(), name="stop_watch")
         self._private_task = asyncio.create_task(self._private_stream.run(), name="private_ws")
 
     # ------------------------------------------------------------------ keys (set from the dashboard)
@@ -165,6 +170,19 @@ class Engine:
         ans = res.answers.get("is_check", {})
         return {"ok": True, "latency_ms": round(res.latency_ms), "answer_noul": ans.get("noul"), "model": res.metadata.get("model")}
 
+    async def _stop_watch(self) -> None:
+        """Evaluate managed stops on the mainnet ticker (pushed ~10x/s) twice a second."""
+        while True:
+            await asyncio.sleep(0.5)
+            ex = self.executor
+            if not ex:
+                continue
+            for sym in list(ex._managed):
+                try:
+                    await ex.check_stop(sym)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("stop watch %s: %s", sym, exc)
+
     async def _on_testnet_tick(self, symbol: str, t: dict) -> None:
         if self.executor:
             await self.executor.on_testnet_tick(symbol, t)
@@ -178,6 +196,8 @@ class Engine:
         if getattr(self, "_private_stream", None):
             self._private_stream.stop()
             self._private_task.cancel()
+        if getattr(self, "_stop_task", None):
+            self._stop_task.cancel()
         for t in self.tasks:
             t.cancel()
         if self.session:

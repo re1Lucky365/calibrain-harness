@@ -21,7 +21,7 @@ export type State = {
   ticks: Record<string, Tick>;
   book: Book | null;
   socket: { connected: boolean; lastMsg: number; latencyMs: number | null; msgs: number };
-  modal: { kind: "decision" | "state" | "keys" | "help" | "tf"; data?: any } | null;
+  modal: { kind: "decision" | "state" | "keys" | "help" | "tf" | "universe"; data?: any } | null;
   cmdHint: string | null;
   rev: { trades: number; events: number; eval: number };
 };

@@ -124,6 +124,14 @@ class Settings:
     allow_short: bool = _b("CTB_ALLOW_SHORT", True)
     # entries are IOC limits at most this far past the best testnet price; unfilled size is dropped
     max_entry_slip_bp: float = _f("CTB_MAX_ENTRY_SLIP_BP", 10)
+    # managed exits: target = resting reduce-only limit at the target price (fills at it or better);
+    # stop = watched on the testnet bid/ask and exited with capped IOC orders that widen step by step,
+    # so a thin book cannot turn a 1R stop into a 7R loss; exchange stop kept at backstop_mult x the
+    # distance in case the bot is down. "exchange" = plain Full-mode market TP/SL on Bybit.
+    exit_mode: str = os.environ.get("CTB_EXIT_MODE", "managed")
+    backstop_mult: float = _f("CTB_BACKSTOP_MULT", 2.0)
+    exit_chase_step_bp: float = _f("CTB_EXIT_CHASE_STEP_BP", 10)
+    exit_chase_max_bp: float = _f("CTB_EXIT_CHASE_MAX_BP", 150)
     tpsl_trigger: str = os.environ.get("CTB_TPSL_TRIGGER", "LastPrice")  # LastPrice | MarkPrice | IndexPrice
     bar_settle_s: float = _f("CTB_BAR_SETTLE_S", 0.3)  # wait after a bar closes before building state
     trading_enabled: bool = _b("CTB_TRADING_ENABLED", False)  # start in observe-only
@@ -193,6 +201,10 @@ class Settings:
             "round_trip_cost_bp": self.round_trip_cost_bp,
             "max_entry_slip_bp": self.max_entry_slip_bp,
             "tpsl_trigger": self.tpsl_trigger,
+            "exit_mode": self.exit_mode,
+            "backstop_mult": self.backstop_mult,
+            "exit_chase_step_bp": self.exit_chase_step_bp,
+            "exit_chase_max_bp": self.exit_chase_max_bp,
             "allow_short": self.allow_short,
             "trading_enabled": self.trading_enabled,
             "exploration_mode": self.exploration_mode,

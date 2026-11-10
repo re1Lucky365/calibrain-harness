@@ -23,8 +23,13 @@ from . import runs as runs_mod
 from . import universe as universe_mod
 
 log = logging.getLogger("ctb.server")
-WEB = ROOT / "web"
 NEXT_OUT = ROOT / "web-next" / "out"
+UI_NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>Calibrain</title>
+<body style="background:#000;color:#ddd;font:15px/1.6 ui-monospace,Menlo,monospace;padding:48px;max-width:720px">
+<h2 style="color:#ff9a2e;font-weight:600">The Calibrain UI is not built yet</h2>
+<p>The service is running (API on this address, live socket at <code>/ws</code>). Build the terminal once:</p>
+<pre style="background:#111;padding:14px;border:1px solid #333">cd web-next &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+<p>then reload this page. No restart is needed.</p></body>"""
 PUSH_MS = 100
 DEV_ORIGINS = {"localhost:3000", "127.0.0.1:3000"}  # `next dev`
 
@@ -75,10 +80,10 @@ def make_app(engine: Engine) -> web.Application:
     routes = web.RouteTableDef()
 
     @routes.get("/")
-    async def index(_: web.Request) -> web.FileResponse:
+    async def index(_: web.Request) -> web.StreamResponse:
         if (NEXT_OUT / "index.html").exists():
             return web.FileResponse(NEXT_OUT / "index.html")
-        return web.FileResponse(WEB / "index.html")
+        return web.Response(status=503, content_type="text/html", text=UI_NOT_BUILT)
 
     @routes.get("/api/overview")
     async def overview(_: web.Request) -> web.Response:
@@ -539,22 +544,25 @@ def make_app(engine: Engine) -> web.Application:
             engine.subscribers.discard(q)
         return ws
 
-    app.add_routes(routes)
-    if NEXT_OUT.exists():
-        # Next.js static export (web-next/out): / and /_next/* served from here, same origin as the API
-        async def legacy(_: web.Request) -> web.FileResponse:
-            return web.FileResponse(WEB / "index.html")
-        app.router.add_get("/legacy", legacy)
-        app.router.add_static("/_next", NEXT_OUT / "_next")
+    # The UI is the Next.js static export (web-next/out), served on the same origin as the API.
+    # Files are resolved per request, so a fresh `npm run build` is picked up without a restart.
+    def export_file(rel: str) -> Path:
+        f = (NEXT_OUT / rel).resolve()
+        if NEXT_OUT.resolve() not in f.parents or not f.is_file():
+            raise web.HTTPNotFound()
+        return f
 
-        async def root_asset(req: web.Request) -> web.StreamResponse:
-            """Icons and small files the export writes at its root (favicon.ico, icon.svg, ...)."""
-            f = NEXT_OUT / req.match_info["name"]
-            if f.parent != NEXT_OUT or not f.is_file():
-                raise web.HTTPNotFound()
-            return web.FileResponse(f)
-        app.router.add_get(r"/{name:[A-Za-z0-9_.-]+\.(?:ico|svg|png|webmanifest|txt)}", root_asset)
-    app.router.add_static("/static", WEB)
+    async def next_asset(req: web.Request) -> web.FileResponse:
+        return web.FileResponse(export_file("_next/" + req.match_info["tail"]),
+                                headers={"Cache-Control": "public, max-age=31536000, immutable"})  # hashed names
+
+    async def root_asset(req: web.Request) -> web.FileResponse:
+        """Icons and small files the export writes at its root (favicon.ico, icon.svg, ...)."""
+        return web.FileResponse(export_file(req.match_info["name"]))
+
+    app.add_routes(routes)
+    app.router.add_get("/_next/{tail:.+}", next_asset)
+    app.router.add_get(r"/{name:[A-Za-z0-9_.-]+\.(?:ico|svg|png|webmanifest|txt)}", root_asset)
 
     async def on_startup(_: web.Application) -> None:
         await engine.start()

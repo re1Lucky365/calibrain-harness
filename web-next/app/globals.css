@@ -289,8 +289,8 @@ dialog.keys { width: min(640px, 95vw); }
 .pb.tight > .t td:first-child, .pb.tight > .t th:first-child { padding-left: 10px; }
 .pb.tight > .t td:last-child, .pb.tight > .t th:last-child { padding-right: 10px; }
 
-/* ---------- Calibrain brand */
+/* ---------- Calibrain Harness brand */
 .brand .brand-svg { display: block; flex: none; }
-.brand .brand-name { font: 600 15px var(--cond); letter-spacing: .14em; color: var(--text); }
-.brand .brand-name b { color: var(--amber); font-weight: 700; }
+.brand .brand-name { font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; letter-spacing: -.01em; color: #fff; white-space: nowrap; }
+.brand .brand-name i { font-style: normal; font-weight: 400; color: #8e8e93; }
 .brand .brand-tag { font: 600 9px var(--mono); color: var(--amber); border: 1px solid var(--amber-dim); padding: 0 4px; letter-spacing: .08em; }

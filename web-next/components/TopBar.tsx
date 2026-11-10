@@ -66,6 +66,7 @@ export function CommandBar() {
     if (views[raw]) return setState({ view: views[raw] });
     if (raw === "ASK" || raw === "PRB") return ask(raw === "PRB");
     if (raw === "KEYS") return setState({ modal: { kind: "keys" } });
+    if (raw === "UNIV" || raw === "SYMBOLS" || raw === "SYM") return setState({ modal: { kind: "universe" } });
     if (raw === "HELP" || raw === "?") return setState({ modal: { kind: "help" } });
     flash(`UNKNOWN COMMAND "${raw}" · type HELP`);
   };

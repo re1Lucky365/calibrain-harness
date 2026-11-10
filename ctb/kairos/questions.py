@@ -9,13 +9,22 @@ Principles (from the Kairos contract and from what went wrong with the Jev schem
 - An explicit applicability question (data_sufficient) is the no-match path.
 
 Bump QUESTION_SET_VERSION on ANY wording change so evaluation never mixes versions.
+
+perp-v2.0 (from the 10 Nov live evaluation of v1):
+- v1 forecasts expected far more movement than happened (P(neither) ~17% vs 68-83% realised) and
+  scored worse than base rates. v2 puts the instrument's own measured base rates for the exact
+  bracket into the state (historical_base_rates) and asks Kairos to adjust from them.
+- data_sufficient never exceeded 0.53 and blocked every strict trade without being labellable;
+  regime and crowding were not labellable either. All three are dropped.
+- Added direction and big_move: binary, symmetric under mirroring, labelled from the same path.
+- 7 questions instead of 8: every question carries the full state, so each one costs ~1.8k tokens.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-QUESTION_SET_VERSION = "perp-v1.0"
+QUESTION_SET_VERSION = "perp-v2.0"
 
 BRACKET_IDS = ["target_first", "stop_first", "neither"]
 RETURN_BIN_IDS = [f"bin_{i}" for i in range(7)]
@@ -36,7 +45,45 @@ def return_bin_edges_pct(sl_bp: float) -> list[float]:
     return [e * d for e in RETURN_BIN_EDGES_IN_D]
 
 
+ANCHOR = ("historical_base_rates in the state gives how often each outcome happened for this exact question on this instrument "
+          "recently. Start from those frequencies and move away from them only as far as specific evidence in the state justifies; "
+          "if the evidence is mixed or weak, stay close to them.")
+
+
 def build_questions(sl_bp: float, tp_bp: float, horizon_min: int) -> dict[str, Any]:
+    """perp-v2.0 question set."""
+    sl, tp = _fmt(sl_bp / 100), _fmt(tp_bp / 100)
+    v1 = build_questions_v1(sl_bp, tp_bp, horizon_min)
+    qs: dict[str, Any] = {
+        "long_bracket": {**v1["long_bracket"], "instructions": v1["long_bracket"]["instructions"] + " " + ANCHOR + " (key: long_bracket)"},
+        "short_bracket": {**v1["short_bracket"], "instructions": v1["short_bracket"]["instructions"] + " " + ANCHOR + " (key: short_bracket)"},
+        "return_distribution": {**v1["return_distribution"],
+                                "instructions": v1["return_distribution"]["instructions"] + " " + ANCHOR + " (key: return_distribution)"},
+        "direction": {
+            "type": "noul",
+            "instructions": (f"Will the price {horizon_min} minutes from now be higher than last_price? " + ANCHOR
+                             + " (key: price_higher_at_horizon)"),
+            "criteria": {
+                "true": f"The price {horizon_min} minutes from now is above last_price.",
+                "false": f"The price {horizon_min} minutes from now is at or below last_price.",
+            },
+        },
+        "big_move": {
+            "type": "noul",
+            "instructions": (f"Within the next {horizon_min} minutes, will price at any point move at least {sl}% away from last_price "
+                             "in either direction (up or down)? " + ANCHOR + " (key: moved_at_least_one_stop_either_way)"),
+            "criteria": {
+                "true": f"At some point within {horizon_min} minutes price is at least {sl}% above or at least {sl}% below last_price.",
+                "false": f"Price stays within {sl}% of last_price in both directions for the full {horizon_min} minutes.",
+            },
+        },
+        "mean_reversion": v1["mean_reversion"],
+        "setup_quality": v1["setup_quality"],
+    }
+    return qs
+
+
+def build_questions_v1(sl_bp: float, tp_bp: float, horizon_min: int) -> dict[str, Any]:
     sl, tp = _fmt(sl_bp / 100), _fmt(tp_bp / 100)
     edges = return_bin_edges_pct(sl_bp)
     lo = ["-infinity"] + [_fmt(e) for e in edges]
@@ -149,4 +196,6 @@ EXPECTED_TYPES = {
     "crowding": ("choice", CROWDING_IDS),
     "mean_reversion": ("noul", None),
     "data_sufficient": ("noul", None),
+    "direction": ("noul", None),
+    "big_move": ("noul", None),
 }

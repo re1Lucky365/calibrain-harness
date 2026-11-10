@@ -6,8 +6,8 @@ const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500", "600"], 
 const cond = IBM_Plex_Sans_Condensed({ subsets: ["latin"], weight: ["500", "600", "700"], variable: "--font-plex-cond" });
 
 export const metadata: Metadata = {
-  title: "Classifier Trading Terminal",
-  description: "Kairos-driven perpetuals on Bybit testnet: live market data, decisions, execution and evaluation.",
+  title: "Calibrain",
+  description: "Calibrain: trade crypto perpetuals with calibrated classification models (Kairos today) on Bybit testnet, and measure whether the model has an edge.",
 };
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#000000" };

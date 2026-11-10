@@ -210,6 +210,7 @@ export function StatusLine() {
       </span>
       <span><Dot c={!k.configured ? "warn" : k.last_error ? "bad" : "ok"} />KAIROS <b>{k.configured ? (k.last_error ? "ERROR" : "READY") : "NO KEY"}</b> {k.requests_last_hour}/{k.budget_per_hour} req/h</span>
       <span><Dot c={ov.executor_error ? "bad" : a?.private_stream ? "ok" : "warn"} />TESTNET <b>{ov.executor_error ? "OFFLINE" : a?.private_stream ? "STREAMING" : "POLLING"}</b>{a?.last_sync ? ` · sync ${age(now / 1000 - a.last_sync)}` : ""}</span>
+      {ov.run && <span data-tip={ov.run.name}>RUN <b className="amb">{ov.run.id}</b></span>}
       <span>MODE <b className={a?.trading_enabled ? "up" : ""}>{a?.trading_enabled ? "AUTO-TRADE" : "OBSERVE"}</b>{st.exploration_mode && <b className="amb"> · EXPLORE</b>}</span>
       <span>TRADE TF <b className="amb">{st.tf_profiles[st.decision_tf]?.label || st.decision_tf}</b> · HOLD ≤ <b>{st.horizon_minutes}m</b></span>
       <span>LABELLED <b>{ov.labelled_total}</b></span>

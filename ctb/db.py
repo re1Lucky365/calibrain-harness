@@ -103,8 +103,29 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# Execution-accuracy columns added after the first release (migrated in place).
+TRADE_COLUMNS = {
+    "mode": "TEXT",              # strict | exploration
+    "requested_qty": "REAL",     # what we asked for; qty is what Bybit actually filled
+    "ref_price": "REAL",         # best testnet price at order time
+    "cap_price": "REAL",         # IOC limit price (ref +/- max_entry_slip_bp)
+    "decision_price": "REAL",    # mainnet price the decision was made on
+    "book_spread_bp": "REAL",
+    "planned_sl_bp": "REAL",
+    "planned_tp_bp": "REAL",
+    "entry_fee": "REAL",
+    "exit_fee": "REAL",
+    "entry_slip_bp": "REAL",     # + = filled worse than ref
+    "exit_slip_bp": "REAL",      # + = exited worse than the TP/SL trigger
+    "entry_latency_ms": "REAL",  # order sent -> fill confirmed
+    "r_mult": "REAL",            # realized_pnl / (qty x |entry - live stop|)
+    "exit_fills": "INTEGER",
+    "fills_json": "TEXT",
+    "close_notes": "TEXT",
+}
+
 JSON_COLS = {"state_json", "questions_json", "answers_json", "parsed_json", "issues_json", "usage_json",
-             "model_meta_json", "decision_json", "label_json", "probs_json"}
+             "model_meta_json", "decision_json", "label_json", "probs_json", "fills_json"}
 
 
 class DB:
@@ -120,6 +141,11 @@ class DB:
 
     def _migrate(self) -> None:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(decisions)")}
+        tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(trades)")}
+        for col, typ in TRADE_COLUMNS.items():
+            if col not in tcols:
+                self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+        self.conn.execute("UPDATE trades SET mode=notes WHERE mode IS NULL AND notes IN ('exploration','strict')")
         if "decision_tf" not in cols:
             self.conn.execute("ALTER TABLE decisions ADD COLUMN decision_tf TEXT")
             # every decision before this column existed was made on the 5m profile (120 min horizon)

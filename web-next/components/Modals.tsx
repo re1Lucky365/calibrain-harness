@@ -258,7 +258,7 @@ function UniverseModal() {
                     <td>{c.testnet ? <span className="tag long">LISTED</span> : <span className="tag err">NOT LISTED</span>}</td>
                     <td className="r">{b?.ok ? `${usd(b.bid_usd_20bp)} / ${usd(b.ask_usd_20bp)}` : b ? <span className="muted">{b.reason}</span> : "—"}</td>
                     <td className="r">{b?.ok ? fx(b.spread_bp, 2) : "—"}</td>
-                    <td>{b?.ok && b.thin ? <span className="tag part" data-tip={`Less than $${usd(u.thin_depth_usd)} rests within 20bp on one side: orders will be small or partly filled`}>THIN BOOK</span> : ""}</td>
+                    <td>{c.asset_type !== "crypto" && <span className="tag amb" data-tip={`Bybit lists this as a ${c.asset_type} perp: it tracks a market with trading hours, so nights and weekends behave unlike crypto and the base rates mix open and closed sessions.`}>{String(c.asset_type).toUpperCase()}</span>} {b?.ok && b.thin ? <span className="tag part" data-tip={`Less than one max-size order ($${usd(u.thin_depth_usd)}) rests within 20bp on one side: entries will be partly filled`}>THIN BOOK</span> : ""}</td>
                   </tr>
                 );
               })}

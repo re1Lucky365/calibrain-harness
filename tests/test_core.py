@@ -357,3 +357,19 @@ def test_mirror_swaps_base_rates():
     m = mirror_state(st)["historical_base_rates"]
     assert m["short_bracket"]["stop_first"] == 0.6 and m["price_higher_at_horizon"] == 0.6
     assert m["return_distribution"]["bin_0"] == BASE["return_distribution"]["bin_6"]
+
+
+def test_runs_stamp_history_and_rotate(tmp_path):
+    from ctb import runs
+    from ctb.db import DB
+    db = DB(tmp_path / "t.db")
+    for t in (100, 200, 300):
+        db.insert("decisions", {"ts": t, "symbol": "BTCUSDT"})
+        db.insert("trades", {"symbol": "BTCUSDT", "side": "long", "opened_ts": t, "status": "closed"})
+    runs.define_history(db, [("Run 1", 0, 150, {}, ""), ("Run 2", 150, None, {}, "")])
+    assert [r["run_id"] for r in db.query("SELECT run_id FROM decisions ORDER BY ts")] == [1, 2, 2]
+    assert runs.current(db)["name"] == "Run 2"
+    r3 = runs.start(db, strict())
+    assert r3["id"] == 3 and r3["name"].startswith("Run 3") and r3["config_json"]["exploration_mode"] is False
+    assert db.one("SELECT ended_ts FROM runs WHERE id=2")["ended_ts"] is not None
+    assert runs.ensure(db, strict())["id"] == 3  # a restart keeps the open run

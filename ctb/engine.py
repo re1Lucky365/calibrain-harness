@@ -15,6 +15,7 @@ import aiohttp
 from .broker.bybit_private_ws import BybitPrivateStream
 from .broker.bybit_rest import BybitTestnet
 from .broker.executor import Executor
+from .calibration import Calibrator
 from .config import Settings, save_env
 from .db import DB
 from .evaluation.labeler import Labeler
@@ -48,6 +49,8 @@ class Engine:
         self.started_at = time.time()
         self.tasks: list[asyncio.Task] = []
         self.last_decision_error: str | None = None
+        self.calibrator = Calibrator(self.db)
+        self.kairos_sem = asyncio.Semaphore(max(1, s.kairos_concurrency))
 
     # ------------------------------------------------------------------ pub/sub
     def emit(self, kind: str, data: dict[str, Any]) -> None:
@@ -74,6 +77,10 @@ class Engine:
             self.budget.calls.append(r["ts"])
         for r in self.db.query("SELECT ts FROM news WHERE ts > ? ORDER BY ts", (hour_ago,)):
             self.news_budget.calls.append(r["ts"])
+        try:
+            self.calibrator.refit()
+        except Exception as exc:  # noqa: BLE001
+            self.db.event("error", "calibration", f"calibration refit failed: {exc}")
         await self.feed.warmup()
         if self.s.bybit_api_key and self.s.bybit_api_secret:
             await self._start_executor()
@@ -216,7 +223,12 @@ class Engine:
             questions = build_questions(meta["sl_bp"], meta["tp_bp"], meta["horizon_min"])
             row = await self._ask(symbol, state, questions, meta, probe=None)
             if row.get("parsed_json") is not None:
-                decision = decide(row["parsed_json"], meta, self.s, has_position=pos is not None)
+                try:
+                    weights = self.calibrator.maybe_refit()
+                except Exception as exc:  # noqa: BLE001
+                    weights = self.calibrator.weights
+                    self.db.event("error", "calibration", f"calibration refit failed: {exc}", symbol)
+                decision = decide(row["parsed_json"], meta, self.s, has_position=pos is not None, weights=weights)
                 dj = {**decision.as_dict(), "cost_bp": meta["cost_bp"], "meta": meta}
                 self.db.update("decisions", row["id"], {"decision_json": dj, "action": decision.action})
                 row.update(decision_json=dj, action=decision.action)
@@ -244,7 +256,8 @@ class Engine:
             "testnet_price": meta.get("testnet_price"), "sl_bp": meta["sl_bp"], "tp_bp": meta["tp_bp"], "horizon_min": meta["horizon_min"],
         }
         try:
-            res = await self.kairos.ask(state, questions)
+            async with self.kairos_sem:
+                res = await self.kairos.ask(state, questions)
             parsed, issues = validate(res.answers, questions)
             row.update(answers_json=res.answers, parsed_json=parsed, issues_json=issues, usage_json=res.usage,
                        model_meta_json=res.metadata, latency_ms=round(res.latency_ms, 1), attempts=res.attempts,
@@ -285,7 +298,8 @@ class Engine:
                                    "title": item["title"], "published_at": published, "horizon": "15m",
                                    "cost_bp": self.s.round_trip_cost_bp, "entry_ts": item["first_seen_ts"]}
             try:
-                res = await self.kairos.ask(body["state"], body["questions"], task_profile="news_return")
+                async with self.kairos_sem:
+                    res = await self.kairos.ask(body["state"], body["questions"], task_profile="news_return")
                 probs, issues = news_profile.validate(res.answers)
                 row.update(probs_json=probs, issues_json=issues, usage_json=res.usage, latency_ms=round(res.latency_ms, 1),
                            request_id=res.metadata.get("request_id"))
@@ -306,4 +320,8 @@ class Engine:
             "issues": d.get("issues_json"), "parsed": d.get("parsed_json"), "price": d.get("price"), "sl_bp": d.get("sl_bp"),
             "tp_bp": d.get("tp_bp"), "label": d.get("label_json"), "probe": d.get("probe"),
             "exploration": dj.get("exploration", False), "strict_action": dj.get("strict_action"),
+            "ev_long_raw_r": dj.get("ev_long_raw_r"), "ev_short_raw_r": dj.get("ev_short_raw_r"),
+            "ev_long_base_r": dj.get("ev_long_base_r"), "ev_short_base_r": dj.get("ev_short_base_r"),
+            "p_up": dj.get("p_up"), "p_up_raw": dj.get("p_up_raw"), "p_big_move": dj.get("p_big_move"),
+            "weights": dj.get("weights"), "qset": d.get("qset_version"),
         }

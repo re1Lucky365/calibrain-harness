@@ -153,3 +153,39 @@ The terminal UI is a Next.js static export (`web-next/`, see its README) served 
 gets live data over one WebSocket (`/ws`) instead of polling. The bot itself listens to Bybit's
 mainnet public stream, the testnet ticker stream and the testnet private stream (fills, positions,
 wallet), and decides 0.3 s after each bar closes (`CTB_BAR_SETTLE_S`).
+
+## Question set v2 and calibration (perp-v2.0)
+
+v1 was scored on 145 labelled live decisions against the instrument's own base rates for the same
+bracket: Kairos was worse than the base rates on every bracket question (Brier skill vs base rates
+long -0.28, short -0.20, return distribution -0.15) and expected far more movement than happened.
+
+- **Anchoring.** The state now carries `historical_base_rates`: how often target/stop/neither,
+  each return bin, "higher at horizon" and "moved one stop" actually happened for this exact bracket
+  on this instrument over the last ~40 h of completed windows (no look-ahead). Each question tells
+  Kairos to start from those and move only as far as the evidence supports.
+- **Questions.** long/short bracket, return distribution, direction, big_move, mean_reversion,
+  setup_quality (7). `data_sufficient`, `regime` and `crowding` were dropped: none was labellable and
+  `data_sufficient` (never above 0.53) blocked every strict trade.
+- **Calibration.** Decisions use `w * Kairos + (1 - w) * base rates` per question. `w` starts at 0.5
+  and is refitted every 15 min on labelled v2 outcomes once a question has 100 of them. If Kairos adds
+  nothing, `w` goes to 0 and the bot stops trading on it. EVAL -> BASE shows Kairos vs base rates.
+- **Strict gates (EXPLORE off).** Calibrated EV >= `CTB_MIN_EDGE_R`, setup_quality >= 1.5,
+  calibrated direction agrees with the side by `CTB_MIN_DIRECTION_MARGIN`, return distribution
+  agrees, base rates available, plus the hard gates.
+- **Portfolio caps.** Total open stop-risk <= `CTB_MAX_OPEN_RISK_PCT` (2% of equity; new trades shrink
+  to fit) and at most `CTB_MAX_SAME_SIDE` (4) positions in one direction.
+
+Replaying the v1 answers through this policy on the same bars: raw Kairos would have taken 7 trades
+averaging -0.39R; the calibrated strict policy takes none. With the default 5m profile the base
+rates alone are never +EV (15 bp round trip is ~0.25R on a 60 bp stop), so strict trades only
+happen when Kairos shows real information beyond the base rates.
+
+## Symbol universe
+
+`UNIV` (or SYMBOLS on the monitor panel) lists the top 100 USDT perps by 24h turnover with testnet
+listing, testnet depth within 20 bp and spread. Only perps listed on both mainnet and testnet are
+accepted (max 30). The Kairos budget is checked for the new count (raise it explicitly if needed),
+a symbol with an open bot trade cannot be removed, and the choice is saved to `.env` (`CTB_SYMBOLS`).
+The service then restarts itself (~15 s) and resumes auto-trade if it was on. Public market data
+uses one WebSocket per 8 symbols; at most `CTB_KAIROS_CONCURRENCY` (6) Kairos requests run at once.

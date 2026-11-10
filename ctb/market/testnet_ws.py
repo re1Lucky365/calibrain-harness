@@ -41,7 +41,9 @@ class TestnetTickerStream:
         while not self._stop:
             try:
                 async with self.session.ws_connect(TESTNET_PUBLIC_WS, heartbeat=None) as ws:
-                    await ws.send_json({"op": "subscribe", "args": [f"tickers.{s}" for s in self.symbols]})
+                    args = [f"tickers.{s}" for s in self.symbols]
+                    for i in range(0, len(args), 10):  # Bybit accepts at most 10 args per subscribe
+                        await ws.send_json({"op": "subscribe", "args": args[i:i + 10]})
                     self.connected, backoff = True, 1.0
                     pinger = asyncio.create_task(self._ping(ws))
                     try:

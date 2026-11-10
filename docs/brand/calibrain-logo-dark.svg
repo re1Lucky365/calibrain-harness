@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" width="520" height="128" role="img" aria-label="Calibrain">
+  <g>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A1A1D"/>
+      <stop offset="1" stop-color="#060607"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
+      <stop offset="0" stop-color="#FFC266"/>
+      <stop offset="0.55" stop-color="#FF9A2E"/>
+      <stop offset="1" stop-color="#F26B1D"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.03"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="url(#tile)"/>
+  <rect x="2.75" y="2.75" width="122.5" height="122.5" rx="27.25" fill="none" stroke="url(#edge)" stroke-width="1.5"/>
+  <!-- calibration arc: a "C" open to the right (gap from -42deg to +42deg) -->
+  <path d="M 88.96 41.79 A 34 34 0 1 0 88.96 86.21" fill="none" stroke="url(#arc)" stroke-width="11" stroke-linecap="round"/>
+  <!-- the ideal reliability line, and three calibrated points on it -->
+  <line x1="44" y1="84" x2="84" y2="44" stroke="#FFFFFF" stroke-opacity="0.26" stroke-width="2.5" stroke-dasharray="3 5" stroke-linecap="round"/>
+  <rect x="43" y="75" width="10" height="10" rx="2.5" fill="#FFFFFF" fill-opacity="0.5"/>
+  <rect x="58" y="58" width="12" height="12" rx="3" fill="#FFFFFF" fill-opacity="0.82"/>
+  <rect x="73" y="41" width="14" height="14" rx="3.5" fill="#FFB547"/>
+</g>
+  <text x="150" y="80" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="58" font-weight="650" letter-spacing="-1.6" fill="#F4F4F5">cali<tspan fill="#FF9A2E">brain</tspan></text>
+  <text x="152" y="106" font-family="'IBM Plex Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" letter-spacing="3.2" fill="#8A8A90">CALIBRATED CLASSIFIER TRADING</text>
+</svg>

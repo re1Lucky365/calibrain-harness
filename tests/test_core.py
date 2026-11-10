@@ -20,16 +20,20 @@ def good_answers():
         "long_bracket": {"type": "choice", "choice": "target_first", "probabilities": {"target_first": 0.55, "stop_first": 0.30, "neither": 0.15}, "confidence": 0.4},
         "short_bracket": {"type": "choice", "choice": "stop_first", "probabilities": {"target_first": 0.25, "stop_first": 0.6, "neither": 0.15}, "confidence": 0.4},
         "return_distribution": {"type": "choice", "choice": "bin_4", "probabilities": {f"bin_{i}": p for i, p in enumerate([0.02, 0.05, 0.13, 0.2, 0.3, 0.2, 0.1])}, "confidence": 0.2},
-        "regime": {"type": "choice", "choice": "uptrend", "probabilities": {"uptrend": 0.5, "downtrend": 0.1, "range": 0.3, "volatile_chop": 0.1}, "confidence": 0.3},
         "setup_quality": {"type": "score", "score": 2.5, "legend": [], "probabilities": [0.0, 0.1, 0.4, 0.4, 0.1], "confidence": 0.3},
-        "crowding": {"type": "choice", "choice": "balanced", "probabilities": {"longs_crowded": 0.2, "shorts_crowded": 0.2, "balanced": 0.6}, "confidence": 0.3},
         "mean_reversion": {"type": "noul", "noul": 0.3},
-        "data_sufficient": {"type": "noul", "noul": 0.8},
+        "direction": {"type": "noul", "noul": 0.62},
+        "big_move": {"type": "noul", "noul": 0.7},
     }
 
 
 Q = build_questions(60, 100, 120)
-META = {"sl_bp": 60.0, "tp_bp": 100.0, "cost_bp": 15.0, "price": 100.0}
+BASE = {"long_bracket": {"target_first": 0.2, "stop_first": 0.3, "neither": 0.5},
+        "short_bracket": {"target_first": 0.2, "stop_first": 0.3, "neither": 0.5},
+        "return_distribution": {f"bin_{i}": p for i, p in enumerate([0.02, 0.08, 0.25, 0.3, 0.25, 0.08, 0.02])},
+        "price_higher_at_horizon": 0.5, "moved_at_least_one_stop_either_way": 0.55}
+META = {"sl_bp": 60.0, "tp_bp": 100.0, "cost_bp": 15.0, "price": 100.0, "base_rates": BASE}
+RAW = {q: 1.0 for q in ("long_bracket", "short_bracket", "return_distribution", "direction", "big_move")}  # trust Kairos fully
 
 
 def test_questions_within_kairos_limits():
@@ -51,21 +55,23 @@ def test_validate_accepts_contract_and_preserves_zero():
 def test_validate_flags_bad_answers_without_repairing():
     a = good_answers()
     a["long_bracket"]["probabilities"]["neither"] = 0.6  # sum 1.45
-    del a["data_sufficient"]
+    del a["direction"]
     a["mean_reversion"]["noul"] = float("nan")
     parsed, issues = validate(a, Q)
-    assert "long_bracket" not in parsed and "data_sufficient" not in parsed and "mean_reversion" not in parsed
+    assert "long_bracket" not in parsed and "direction" not in parsed and "mean_reversion" not in parsed
     assert any("sum" in i for i in issues) and any("missing answer" in i for i in issues)
 
 
 def test_policy_ev_math_and_gates():
     parsed, _ = validate(good_answers(), Q)
     s = Settings()
-    d = decide(parsed, META, s, has_position=False)
+    s.exploration_mode = False
+    d = decide(parsed, META, s, has_position=False, weights=RAW)
     rr, cost_r = 100 / 60, 15 / 60
     assert d.ev_long_r == pytest.approx(round(0.55 * rr - 0.30 - cost_r, 4))
-    assert d.action == "long"
-    d2 = decide(parsed, META, s, has_position=True)
+    assert d.ev_long_raw_r == d.ev_long_r
+    assert d.action == "long" and d.strict_action == "long"
+    d2 = decide(parsed, META, s, has_position=True, weights=RAW)
     assert d2.action == "flat" and "already in a position" in d2.reason
 
 
@@ -175,7 +181,7 @@ def _weak_answers(l_t, l_s, s_t, s_s):
     a["short_bracket"]["probabilities"] = {"target_first": s_t, "stop_first": s_s, "neither": round(1 - s_t - s_s, 6)}
     a["short_bracket"]["choice"] = max(a["short_bracket"]["probabilities"], key=a["short_bracket"]["probabilities"].get)
     a["setup_quality"].update(score=1.0, probabilities=[0.1, 0.8, 0.1, 0.0, 0.0])
-    a["data_sufficient"]["noul"] = 0.2
+    a["direction"]["noul"] = 0.5
     return a
 
 
@@ -270,3 +276,84 @@ def test_close_reason_from_order_create_type():
     assert reason_from_orders([{"createType": "CreateByTakeProfit"}, {"createType": "CreateByTakeProfit"}]) == "take_profit"
     assert reason_from_orders([{"createType": "CreateByUser"}]) == "external"
     assert reason_from_orders([None]) is None
+
+
+# ---------------------------------------------------------------- v2: base rates, calibration, policy
+def strict() -> Settings:
+    s = Settings()
+    s.exploration_mode = False  # tests must not depend on the local .env
+    return s
+
+from ctb.calibration import blend, fit, rows_for  # noqa: E402
+from ctb.features import base_rates  # noqa: E402
+from ctb.market.store import Bar  # noqa: E402
+
+
+def _bars(closes, spread=0.0):
+    return [Bar(t=i * 300_000, o=c, h=c * (1 + spread), l=c * (1 - spread), c=c, v=1, turnover=1) for i, c in enumerate(closes)]
+
+
+def test_base_rates_flat_market_is_all_neither():
+    br = base_rates(_bars([100.0] * 200), 24, 60, 100)
+    assert br["windows"] == 200 - 24 - 1
+    assert br["long_bracket"]["neither"] > 0.98 and br["short_bracket"]["neither"] > 0.98
+    assert br["moved_at_least_one_stop_either_way"] < 0.02
+    assert abs(sum(br["return_distribution"].values()) - 1) < 1e-3
+
+
+def test_base_rates_uptrend_and_no_lookahead():
+    closes = [100 * (1.002 ** i) for i in range(200)]  # +0.2% per bar: long target (1%) hit in ~5 bars
+    br = base_rates(_bars(closes), 24, 60, 100)
+    assert br["long_bracket"]["target_first"] > 0.95 and br["short_bracket"]["stop_first"] > 0.95
+    assert br["price_higher_at_horizon"] > 0.95
+    # only completed windows: changing the last bar's future cannot exist, so dropping it changes n by 1
+    assert base_rates(_bars(closes[:-1]), 24, 60, 100)["windows"] == br["windows"] - 1
+    assert base_rates(_bars([100.0] * 50), 24, 60, 100) is None  # too little history
+
+
+def test_blend_and_fit_recover_useless_and_perfect_models():
+    assert blend({"a": 1.0, "b": 0.0}, {"a": 0.0, "b": 1.0}, 0.25) == pytest.approx({"a": 0.25, "b": 0.75})
+    # a model that always says 90/10 while the truth is a coin flip and the base rate knows it -> w = 0
+    useless = [([0.9, 0.1], [0.5, 0.5], i % 2) for i in range(200)]
+    assert fit(useless)["w"] == 0.0 and fit(useless)["fitted"]
+    # a model that is right every time -> w = 1
+    perfect = [([1.0, 0.0] if i % 2 == 0 else [0.0, 1.0], [0.5, 0.5], i % 2) for i in range(200)]
+    assert fit(perfect)["w"] == 1.0
+    assert fit(perfect[:50])["w"] == 0.5 and not fit(perfect[:50])["fitted"]  # prior until MIN_FIT
+
+
+def test_policy_v2_shrinks_overconfident_targets_to_base_rates():
+    parsed, _ = validate(good_answers(), Q)
+    s = strict()
+    raw = decide(parsed, META, s, has_position=False, weights=RAW)
+    base_only = decide(parsed, META, s, has_position=False, weights={q: 0.0 for q in RAW})
+    assert raw.action == "long"
+    assert base_only.ev_long_r == base_only.ev_long_base_r  # pure base rates
+    assert base_only.action == "flat" and any("min edge" in g for g in base_only.gates)
+
+
+def test_policy_v2_requires_direction_agreement_and_base_rates():
+    a = good_answers()
+    a["direction"]["noul"] = 0.40  # bracket says long, direction says down
+    parsed, _ = validate(a, Q)
+    d = decide(parsed, META, strict(), has_position=False, weights=RAW)
+    assert d.action == "flat" and any("direction" in g for g in d.gates)
+    parsed, _ = validate(good_answers(), Q)
+    d = decide(parsed, {k: v for k, v in META.items() if k != "base_rates"}, strict(), has_position=False, weights=RAW)
+    assert d.action == "flat" and any("base rates" in g for g in d.gates)
+
+
+def test_calibration_rows_label_direction_and_big_move():
+    dec = {"parsed_json": {"direction": {"p": 0.7}, "big_move": {"p": 0.4}}, "sl_bp": 50,
+           "decision_json": {"meta": {"base_rates": BASE}},
+           "label_json": {"return_pct": 0.2, "max_up_pct": 0.6, "max_down_pct": -0.1}}
+    assert rows_for("direction", [dec]) == [([0.7, pytest.approx(0.3)], [0.5, 0.5], 0)]
+    assert rows_for("big_move", [dec])[0][2] == 0  # +0.6% >= 0.5% stop -> moved
+
+
+def test_mirror_swaps_base_rates():
+    st = {"last_price": 1, "historical_base_rates": {"what_this_is": "x", **BASE,
+          "long_bracket": {"target_first": 0.1, "stop_first": 0.6, "neither": 0.3}, "price_higher_at_horizon": 0.4}}
+    m = mirror_state(st)["historical_base_rates"]
+    assert m["short_bracket"]["stop_first"] == 0.6 and m["price_higher_at_horizon"] == 0.6
+    assert m["return_distribution"]["bin_0"] == BASE["return_distribution"]["bin_6"]

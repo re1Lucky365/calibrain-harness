@@ -24,9 +24,9 @@ from . import universe as universe_mod
 
 log = logging.getLogger("ctb.server")
 NEXT_OUT = ROOT / "web-next" / "out"
-UI_NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>Calibrain</title>
+UI_NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>Calibrain Harness</title>
 <body style="background:#000;color:#ddd;font:15px/1.6 ui-monospace,Menlo,monospace;padding:48px;max-width:720px">
-<h2 style="color:#ff9a2e;font-weight:600">The Calibrain UI is not built yet</h2>
+<h2 style="color:#ff9a2e;font-weight:600">The Calibrain Harness UI is not built yet</h2>
 <p>The service is running (API on this address, live socket at <code>/ws</code>). Build the terminal once:</p>
 <pre style="background:#111;padding:14px;border:1px solid #333">cd web-next &amp;&amp; npm ci &amp;&amp; npm run build</pre>
 <p>then reload this page. No restart is needed.</p></body>"""
@@ -581,7 +581,7 @@ def main() -> None:
     if os.environ.pop("CTB_RESUME_TRADING", None) == "1":
         s.trading_enabled = True  # restart requested by the symbol picker while auto-trade was on
     engine = Engine(s)
-    print(f"Calibrain terminal: http://{s.host}:{s.port}  (venue: Bybit TESTNET, "
+    print(f"Calibrain Harness: http://{s.host}:{s.port}  (venue: Bybit TESTNET, "
           f"kairos key {'set' if s.kairos_api_key else 'NOT set'}, trading {'ON' if s.trading_enabled else 'observe-only'})")
     web.run_app(make_app(engine), host=s.host, port=s.port, print=None)
 

@@ -1,0 +1,39 @@
+{
+  "task_profile": "news_return",
+  "horizons": ["15m", "1h", "4h"],
+  "objective": "Gross target-asset return in seven cost-scaled bins; horizon is supplied by caller.",
+  "candidate_order": ["return_bin_0", "return_bin_1", "return_bin_2", "return_bin_3", "return_bin_4", "return_bin_5", "return_bin_6"],
+  "example": {
+    "model": "DMIND/Kairos",
+    "state": {
+      "news_text": "Odds seen as stacked against Clarity Act as Senate readies vote",
+      "target_asset": "CRCL",
+      "market": "US stocks",
+      "asset_class": "\u4e2a\u80a1",
+      "event_type": "\u5206\u6790\u5e08\u8bc4\u7ea7(\u76d8\u4e2d\u53d1\u5e03)",
+      "source_name": "FMP",
+      "published_at_utc": "2026-09-15T14:42:53Z",
+      "horizon": "15m",
+      "entry_rule": "First minute bar open at or after published_at_utc + 60 seconds; stock entry and exit must be in the same regular exchange session.",
+      "round_trip_cost_bp": 15.0,
+      "availability_basis": "Historical publication-time simulation; actual first_seen is unavailable.",
+      "return_objective": "Unadjusted target-asset open-to-open gross return in basis points over the supplied holding period; round-trip cost is stated separately."
+    },
+    "questions": {
+      "return_distribution": {
+        "type": "choice",
+        "instructions": "Forecast the target asset gross return over the specified holding period. Select the return interval. Probabilities across the seven intervals represent a predictive distribution; this question does not select a trade or a holding period.",
+        "criteria": {
+          "return_bin_0": "Gross asset return in [-infinity, -60) bp.",
+          "return_bin_1": "Gross asset return in [-60, -30) bp.",
+          "return_bin_2": "Gross asset return in [-30, -15) bp.",
+          "return_bin_3": "Gross asset return in [-15, 15) bp.",
+          "return_bin_4": "Gross asset return in [15, 30) bp.",
+          "return_bin_5": "Gross asset return in [30, 60) bp.",
+          "return_bin_6": "Gross asset return in [60, +infinity) bp."
+        }
+      }
+    },
+    "task_profile": "news_return"
+  }
+}

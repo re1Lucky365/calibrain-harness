@@ -20,6 +20,14 @@ from .market.store import TIMEFRAMES
 
 log = logging.getLogger("ctb.server")
 WEB = ROOT / "web"
+NEXT_OUT = ROOT / "web-next" / "out"
+PUSH_MS = 100
+DEV_ORIGINS = {"localhost:3000", "127.0.0.1:3000"}  # `next dev`
+
+
+def _allowed_origin(origin: str, host: str) -> bool:
+    o = origin.split("://", 1)[-1]
+    return o == host or o in DEV_ORIGINS
 
 
 def j(data: Any, status: int = 200) -> web.Response:
@@ -33,7 +41,7 @@ async def same_origin_only(request: web.Request, handler):
     and, when the browser sends an Origin, that it is this server."""
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         origin = request.headers.get("Origin")
-        if origin and origin.split("://", 1)[-1] != request.host:
+        if origin and not _allowed_origin(origin, request.host):
             return j({"error": "cross-origin request refused"}, 403)
         if not request.content_type.startswith("application/json"):
             return j({"error": "Content-Type must be application/json"}, 415)
@@ -47,6 +55,8 @@ def make_app(engine: Engine) -> web.Application:
 
     @routes.get("/")
     async def index(_: web.Request) -> web.FileResponse:
+        if (NEXT_OUT / "index.html").exists():
+            return web.FileResponse(NEXT_OUT / "index.html")
         return web.FileResponse(WEB / "index.html")
 
     @routes.get("/api/overview")
@@ -343,7 +353,85 @@ def make_app(engine: Engine) -> web.Application:
             engine.subscribers.discard(q)
         return resp
 
+    @routes.get("/ws")
+    async def ws_endpoint(req: web.Request) -> web.WebSocketResponse:
+        """One socket per tab. Pushes engine events as they happen, plus market ticks, the order
+        book and the forming candle for the symbol the client is watching, every PUSH_MS (only
+        what changed). Replaces polling, so the UI updates within ~100 ms of Bybit."""
+        origin = req.headers.get("Origin")
+        if origin and not _allowed_origin(origin, req.host):
+            raise web.HTTPForbidden(text="cross-origin websocket refused")
+        ws = web.WebSocketResponse(heartbeat=20, compress=True)
+        await ws.prepare(req)
+        q: asyncio.Queue = asyncio.Queue()
+        engine.subscribers.add(q)
+        watch = {"symbol": s.symbols[0], "tf": "5"}
+
+        async def reader() -> None:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        m = json.loads(msg.data)
+                    except ValueError:
+                        continue
+                    if m.get("op") == "watch":
+                        if m.get("symbol") in s.symbols:
+                            watch["symbol"] = m["symbol"]
+                        if m.get("tf") in TIMEFRAMES:
+                            watch["tf"] = m["tf"]
+
+        async def forward_events() -> None:
+            while True:
+                await ws.send_str(await q.get())
+
+        async def market() -> None:
+            last_sent: dict[str, Any] = {}
+            while True:
+                await asyncio.sleep(PUSH_MS / 1000)
+                ticks = {}
+                for sym in s.symbols:
+                    st = engine.store[sym]
+                    t, tn = st.ticker, st.testnet_ticker
+                    row = (t.get("lastPrice"), t.get("markPrice"), t.get("bid1Price"), t.get("ask1Price"), tn.get("lastPrice"))
+                    if last_sent.get(sym) != row:
+                        last_sent[sym] = row
+                        ticks[sym] = {"last": row[0], "mark": row[1], "bid": row[2], "ask": row[3], "testnet_last": row[4],
+                                      "pct24h": 100 * float(t["price24hPcnt"]) if t.get("price24hPcnt") else None}
+                st = engine.store[watch["symbol"]]
+                book = (st.bids[:15], st.asks[:15])
+                bars = st.bars.get(watch["tf"]) or []
+                bar = bars[-1].as_dict() if bars else None
+                out: dict[str, Any] = {}
+                if ticks:
+                    out["ticks"] = ticks
+                if last_sent.get("_book") != (watch["symbol"], book):
+                    last_sent["_book"] = (watch["symbol"], book)
+                    out["book"] = {"symbol": watch["symbol"], "bids": book[0], "asks": book[1]}
+                if bar and last_sent.get("_bar") != (watch["symbol"], watch["tf"], bar):
+                    last_sent["_bar"] = (watch["symbol"], watch["tf"], bar)
+                    out["bar"] = {"symbol": watch["symbol"], "tf": watch["tf"], **bar}
+                if out:
+                    out["ts"] = time.time()
+                    await ws.send_str(json.dumps({"kind": "market", "data": out}, default=str))
+
+        tasks = [asyncio.create_task(forward_events()), asyncio.create_task(market())]
+        try:
+            await reader()
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            for t in tasks:
+                t.cancel()
+            engine.subscribers.discard(q)
+        return ws
+
     app.add_routes(routes)
+    if NEXT_OUT.exists():
+        # Next.js static export (web-next/out): / and /_next/* served from here, same origin as the API
+        async def legacy(_: web.Request) -> web.FileResponse:
+            return web.FileResponse(WEB / "index.html")
+        app.router.add_get("/legacy", legacy)
+        app.router.add_static("/_next", NEXT_OUT / "_next")
     app.router.add_static("/static", WEB)
 
     async def on_startup(_: web.Application) -> None:

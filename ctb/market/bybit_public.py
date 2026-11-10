@@ -29,6 +29,8 @@ LARGE_TRADE_USD = {"BTCUSDT": 250_000, "ETHUSDT": 150_000}
 DEFAULT_LARGE_TRADE_USD = 50_000
 
 BarCloseCallback = Callable[[str, str], Awaitable[None]]
+WS_SHARD = 8  # symbols per public WebSocket connection
+UNIVERSE_SIZE = 100  # top USDT perps by 24h turnover offered in the symbol picker
 
 
 class BybitPublicFeed:
@@ -47,8 +49,12 @@ class BybitPublicFeed:
         return data["result"]
 
     async def warmup(self) -> None:
-        tasks = [self._warm_symbol(s) for s in self.store.symbols]
-        await asyncio.gather(*tasks)
+        sem = asyncio.Semaphore(6)  # 8 REST calls per symbol; stay far below Bybit's public limits
+
+        async def one(sym: str) -> None:
+            async with sem:
+                await self._warm_symbol(sym)
+        await asyncio.gather(*(one(s) for s in self.store.symbols))
 
     async def _warm_symbol(self, symbol: str) -> None:
         st = self.store[symbol]
@@ -110,7 +116,8 @@ class BybitPublicFeed:
                     except (TypeError, ValueError):
                         continue
                 uni.sort(key=lambda x: x["turnover24h"], reverse=True)
-                self.store.context["universe"] = uni[:40]
+                self.store.context["universe"] = uni[:40]  # market map
+                self.store.context["universe_all"] = uni[:UNIVERSE_SIZE]  # symbol picker
                 self.store.context["universe_ts"] = time.time()
             except Exception as exc:  # noqa: BLE001
                 self.store.record_error("universe", str(exc))
@@ -125,8 +132,16 @@ class BybitPublicFeed:
 
     # ------------------------------------------------------------------ websocket
     async def ws_loop(self) -> None:
+        """One connection per WS_SHARD symbols (9 topics each), so a large universe never piles
+        hundreds of topics onto one socket and a single drop only gaps a few symbols."""
+        syms = list(self.store.symbols)
+        shards = [syms[i:i + WS_SHARD] for i in range(0, len(syms), WS_SHARD)]
+        self._shard_up = [False] * len(shards)
+        await asyncio.gather(*(self._ws_shard(i, sh) for i, sh in enumerate(shards)))
+
+    async def _ws_shard(self, idx: int, symbols: list[str]) -> None:
         topics: list[str] = []
-        for s in self.store.symbols:
+        for s in symbols:
             topics += [f"tickers.{s}", f"kline.1.{s}", f"kline.5.{s}", f"kline.15.{s}", f"kline.60.{s}", f"kline.240.{s}",
                        f"publicTrade.{s}", f"orderbook.50.{s}", f"allLiquidation.{s}"]
         backoff = 1.0
@@ -135,9 +150,10 @@ class BybitPublicFeed:
                 async with self.session.ws_connect(MAINNET_WS, heartbeat=None, timeout=aiohttp.ClientWSTimeout(ws_close=10)) as ws:
                     for i in range(0, len(topics), 10):
                         await ws.send_json({"op": "subscribe", "args": topics[i:i + 10]})
-                    self.store.ws_connected = True
+                    self._shard_up[idx] = True
+                    self.store.ws_connected = all(self._shard_up)
                     now_ms = int(time.time() * 1000)
-                    for st in self.store.state.values():
+                    for st in (self.store[s] for s in symbols):
                         # a reconnect leaves a hole in trades/liquidations: restart coverage
                         st.stream_since_ms = now_ms
                         st.flow.clear()
@@ -152,14 +168,15 @@ class BybitPublicFeed:
                     finally:
                         pinger.cancel()
             except Exception as exc:  # noqa: BLE001
-                self.store.record_error("ws", repr(exc))
+                self.store.record_error(f"ws:{idx}", repr(exc))
+            self._shard_up[idx] = False
             self.store.ws_connected = False
             if self._stop.is_set():
                 break
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30)
             # resync candles after a gap so indicators do not run on holes
-            await self.warmup()
+            await asyncio.gather(*(self._warm_symbol(s) for s in symbols))
 
     async def _ping(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         while True:

@@ -61,13 +61,14 @@ const dist = (d: any, unit = "bp") => (d ? `${sg(d.mean, 1)}${unit} mean · p90 
 
 export function EvalView() {
   const st = useStore((s) => s.ov?.settings);
-  const [f, setF] = useState({ symbol: "", tf: "", hours: "" });
+  const [f, setF] = useState({ symbol: "", tf: "", hours: "", qset: "perp-v2" });
   const [m, setM] = useState<any>(null);
   const load = useCallback(async () => {
     const q = new URLSearchParams();
     if (f.tf) q.set("tf", f.tf);
     if (f.symbol) q.set("symbol", f.symbol);
     if (f.hours) q.set("hours", f.hours);
+    if (f.qset) q.set("qset", f.qset);
     setM(await api("/api/metrics?" + q));
   }, [f]);
   useEffect(() => { load().catch(() => {}); }, [load]);
@@ -83,6 +84,7 @@ export function EvalView() {
       <span className="code">EVAL</span><b>Kairos model evaluation</b>
       <select value={f.symbol} onChange={(e) => setF({ ...f, symbol: e.target.value })}><option value="">ALL SYMBOLS</option>{st?.symbols.map((s: string) => <option key={s} value={s}>{s}</option>)}</select>
       <select value={f.tf} onChange={(e) => setF({ ...f, tf: e.target.value })}><option value="">ALL TRADE TFs</option>{st && Object.entries<any>(st.tf_profiles).map(([tf, p]) => <option key={tf} value={tf}>TRADE TF {p.label}</option>)}</select>
+      <select value={f.qset} onChange={(e) => setF({ ...f, qset: e.target.value })} data-tip="Question set: v2 adds base-rate anchoring, direction and big_move"><option value="perp-v2">QUESTIONS v2</option><option value="perp-v1">QUESTIONS v1</option><option value="">ALL QUESTION SETS</option></select>
       <select value={f.hours} onChange={(e) => setF({ ...f, hours: e.target.value })}><option value="">ALL TIME</option><option value="24">LAST 24H</option><option value="6">LAST 6H</option><option value="4">LAST 4H</option></select>
       <button className="kbtn" onClick={() => load()}>REFRESH</button>
       <button className="kbtn amber" onClick={report}>EXPORT MINARA REPORT</button>
@@ -106,6 +108,11 @@ export function EvalView() {
       <td className={`r ${ud(b.skill_vs_climatology)}`}>{sg(b.skill_vs_climatology, 3)}</td><td className="r">{fx(b.accuracy_argmax, 3)} / {fx(b.accuracy_majority_baseline, 3)}</td></tr>
   ) : null;
   const mr = mq.mean_reversion, pit = mq.return_distribution?.pit_histogram_quintiles;
+  const bq = (b: any) => b && b.n ? (
+    <tr key={b.name}><td className="amb">{b.name}</td><td className="r">{b.n}</td><td className="r">{fx(b.brier, 4)}</td><td className="r">{fx(b.brier_climatology, 4)}</td><td className="r">—</td>
+      <td className={`r ${ud(b.skill_vs_climatology)}`}>{sg(b.skill_vs_climatology, 3)}</td><td className="r">AUC {fx(b.auc, 3)}</td></tr>
+  ) : null;
+  const vb = m.vs_base_rates || {}, cw = m.calibration_weights || {};
   return (
     <main className="view on">
       {toolbar}
@@ -119,8 +126,24 @@ export function EvalView() {
         <Panel code="SCOR" title="Per-question scores vs baselines" tight>
           <table className="t"><thead><tr><th>Question</th><th className="r">n</th><th className="r">Score</th><th className="r">Climat.</th><th className="r">Uniform</th><th className="r">Skill</th><th className="r">Acc / majority</th></tr></thead>
             <tbody>{qr(mq.long_bracket)}{qr(mq.short_bracket)}{qr(mq.return_distribution, "rps")}{qr(mq.regime)}
+              {bq(mq.direction)}{bq(mq.big_move)}
               {mr && <tr><td className="amb">mean_reversion</td><td className="r">{mr.n}</td><td className="r">{fx(mr.brier, 4)}</td><td className="r">{fx(mr.brier_climatology, 4)}</td><td className="r">—</td><td className={`r ${ud(mr.skill_vs_climatology)}`}>{sg(mr.skill_vs_climatology, 3)}</td><td className="r">AUC {fx(mr.auc, 3)}</td></tr>}</tbody></table>
           <div className="muted" style={{ padding: "4px 8px" }}>Multiclass Brier, or RPS for ordered bins. Lower is better. Skill = 1 − score / climatology.</div>
+        </Panel>
+        <Panel code="BASE" title="Kairos vs the base rates it was given · calibration weights" tight>
+          {Object.keys(vb).length ? (
+            <table className="t">
+              <thead><tr><th>Question</th><th className="r">n</th><th className="r">Brier Kairos</th><th className="r">Brier base rates</th><th className="r">Skill vs base</th><th className="r">Best w</th><th className="r">w in use</th></tr></thead>
+              <tbody>
+                {Object.entries<any>(vb).map(([k, r]) => (
+                  <tr key={k}><td className="amb">{k}</td><td className="r">{r.n}</td><td className="r">{fx(r.brier_kairos, 4)}</td><td className="r">{fx(r.brier_base_rates, 4)}</td>
+                    <td className={`r ${ud(r.kairos_skill_vs_base)}`}>{sg(r.kairos_skill_vs_base, 3)}</td><td className="r">{fx(r.best_w, 2)}</td>
+                    <td className="r">{fx(cw.weights?.[k], 2)}{cw.report?.[k]?.fitted ? "" : " prior"}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <div className="empty">Needs labelled v2 decisions (each is scored after its horizon)</div>}
+          <div className="muted" style={{ padding: "4px 8px" }}>Decisions use w · Kairos + (1 − w) · base rates. w is fitted on labelled outcomes once a question has 100; until then it is 0.5. Skill &gt; 0 = Kairos adds information beyond the base rates.</div>
         </Panel>
         <Panel code="PRB" title="Consistency probes" tight><KV rows={[
           ["Repeat probes", cons.repeat_probes], ["Identical answers", fx(cons.repeat_identical_share, 3)], ["Mean max |Δp| on repeat", fx(cons.repeat_max_abs_prob_diff_mean, 4)],

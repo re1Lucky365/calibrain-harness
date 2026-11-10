@@ -1,4 +1,4 @@
-# Calibrain: web front end
+# Calibrain Harness: web front end
 
 Next.js 16 (App Router, React 19) built as a **static export** and served by the Python terminal
 service at `http://127.0.0.1:8800/`, on the same origin as the API and the `/ws` socket. There is

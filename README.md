@@ -16,6 +16,7 @@
   <img alt="models: Kairos" src="https://img.shields.io/badge/models-Kairos-3a3a3a?style=flat-square">
   <img alt="python 3.12" src="https://img.shields.io/badge/python-3.12-3a3a3a?style=flat-square">
   <img alt="next.js 16" src="https://img.shields.io/badge/next.js-16-3a3a3a?style=flat-square">
+  <a href="LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-3a3a3a?style=flat-square"></a>
 </p>
 
 > [!WARNING]
@@ -319,3 +320,7 @@ never commit `.env` or anything under `data/`.
 
 Calibrain is research software for testnet forward-testing. It is not investment advice, it has not
 been audited, and past testnet results say nothing reliable about future returns.
+
+## License
+
+[MIT](LICENSE). Use, modify and redistribute freely; the software comes with no warranty.

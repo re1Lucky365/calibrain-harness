@@ -35,20 +35,41 @@ Bybit mainnet public data (WS + REST)        news RSS · Fear&Greed · macro (Ya
 
 ## Quick start
 
+Requirements: Python 3.12, and Node.js 20+ with npm (for the terminal UI).
+
 ```bash
 cd ~/Projects/classifier-trading-bot
+
+# 1. Python service (data, Kairos, execution, API)
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env   # add KAIROS_API_KEY and Bybit TESTNET keys
+cp .env.example .env   # add KAIROS_API_KEY and Bybit TESTNET keys (or add them later in the UI: KEYS)
+
+# 2. Terminal UI (Next.js): build once into web-next/out
+cd web-next && npm ci && npm run build && cd ..
+
+# 3. Start everything
 .venv/bin/python -m ctb.server
 ```
 
-Open http://127.0.0.1:8800.
+Open http://127.0.0.1:8800. The Python service serves the built UI, the API and the live
+`/ws` socket from that one address; there is no separate Node process to run.
+
+### Working on the UI
+
+| Task | Command | Notes |
+|---|---|---|
+| Rebuild after pulling or editing UI code | `cd web-next && npm run build` | Reload the page; no server restart needed once `web-next/out` existed at startup. The first build after a fresh clone needs one server restart so it is picked up. |
+| Live-reload development | `cd web-next && npm run dev` | Open http://localhost:3000. Keep `.venv/bin/python -m ctb.server` running: the dev UI talks to its API and `/ws` on 127.0.0.1:8800 (the server allows only `localhost:3000` / `127.0.0.1:3000` cross-origin). |
+| Type-check | `cd web-next && npx tsc --noEmit` | |
+
+If `web-next/out` does not exist, the server falls back to the previous vanilla-JS terminal at `/`.
+That one is always available at http://127.0.0.1:8800/legacy.
 
 - Without `KAIROS_API_KEY` the dashboard still streams all market data and shows the exact
   state that would be sent. Get a key at https://minara.cloud. It must belong to a
   **Kairos-enabled group**: a `default`-group key may not reach `DMIND/Kairos`.
 - The bot starts **observe-only**. Kairos decisions are made and scored, but no orders are placed
-  until you flip **Testnet trading** in the header (or set `CTB_TRADING_ENABLED=1`).
+  until you switch on **AUTO-TRADE** in the command bar (or set `CTB_TRADING_ENABLED=1`).
 - Kill switch: the dashboard button, or `touch KILL` in the project folder. It closes bot positions,
   cancels orders and halts.
 
@@ -126,7 +147,9 @@ ctb/policy.py             EV, gates, sizing
 ctb/broker/               signed testnet client, executor
 ctb/evaluation/           labeler, metrics, report
 ctb/engine.py             orchestration
-ctb/server.py             API + SSE + static
+ctb/server.py             API + /ws live socket + serves the UI
+web-next/                 terminal UI (Next.js, static export to web-next/out)
+web/                      previous vanilla-JS terminal (/legacy)
 web/                      dashboard (vanilla JS, lightweight-charts)
 ```
 

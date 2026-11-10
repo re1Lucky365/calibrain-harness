@@ -212,11 +212,28 @@ class BybitTestnet:
 
     async def set_trading_stop(self, symbol: str, *, take_profit: str | None, stop_loss: str | None,
                                trigger_by: str = "LastPrice") -> None:
-        await self._request("POST", "/v5/position/trading-stop", {
-            "category": "linear", "symbol": symbol, "positionIdx": 0, "tpslMode": "Full",
-            "takeProfit": take_profit, "stopLoss": stop_loss,
-            "tpTriggerBy": trigger_by, "slTriggerBy": trigger_by,
+        params = {"category": "linear", "symbol": symbol, "positionIdx": 0, "tpslMode": "Full",
+                  "takeProfit": take_profit, "stopLoss": stop_loss}
+        if take_profit and take_profit != "0":
+            params["tpTriggerBy"] = trigger_by
+        if stop_loss and stop_loss != "0":
+            params["slTriggerBy"] = trigger_by
+        await self._request("POST", "/v5/position/trading-stop", params)
+
+    async def limit_order(self, symbol: str, side: str, qty: str, price: str, *, link_id: str,
+                          reduce_only: bool = True, tif: str = "GTC") -> dict[str, Any]:
+        """Resting limit order (used for take-profits: fills at the target price or better, never worse)."""
+        return await self._request("POST", "/v5/order/create", {
+            "category": "linear", "symbol": symbol, "side": "Buy" if side == "buy" else "Sell", "orderType": "Limit",
+            "qty": qty, "price": price, "positionIdx": 0, "orderLinkId": link_id, "reduceOnly": reduce_only, "timeInForce": tif,
         })
+
+    async def cancel_order(self, symbol: str, order_id: str) -> None:
+        try:
+            await self._request("POST", "/v5/order/cancel", {"category": "linear", "symbol": symbol, "orderId": order_id})
+        except BybitError as exc:
+            if exc.ret_code not in (110001, 170213):  # already filled / cancelled / not found
+                raise
 
     async def cancel_all(self, symbol: str | None = None) -> None:
         params = {"category": "linear", "symbol": symbol} if symbol else {"category": "linear", "settleCoin": "USDT"}

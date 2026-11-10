@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, post } from "@/lib/api";
 import { loadOverview, selectTf } from "@/lib/data";
 import { setState, useStore } from "@/lib/store";
-import { age, dt, fx, hrs } from "@/lib/format";
+import { age, dt, fx, hrs, sg, short, ud, usd } from "@/lib/format";
 
 function Dialog({ className, children }: { className?: string; children: React.ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -32,6 +32,7 @@ export function Modals() {
   if (modal.kind === "keys") return <KeysModal />;
   if (modal.kind === "help") return <HelpModal />;
   if (modal.kind === "tf") return <TfModal tf={modal.data} />;
+  if (modal.kind === "universe") return <UniverseModal />;
   return null;
 }
 
@@ -67,7 +68,7 @@ function HelpModal() {
     ["BTC · ETH · SOL …", "Load a symbol into chart, Kairos, book and stats"], ["ASK", "Ask Kairos now for the loaded symbol (1 request)"],
     ["PRB", "Ask + repeat & mirror consistency probes (4 requests)"], ["1M 5M 15M 1H 4H", "Chart timeframe (view only)"],
     ["POS 10", "Max open positions (1–50); new entries only"], ["TF 1M · TF 5M · TF 15M · TF 1H", "Trading timeframe: how often Kairos decides and trades"],
-    ["MON EVAL TRD NEWS LOG", "Switch screen (also F1–F5)"], ["KEYS · HELP", "API credentials · this list"], ["/", "Focus the command line from anywhere"],
+    ["UNIV", "Choose the symbols the bot watches and trades"], ["MON EVAL TRD NEWS LOG", "Switch screen (also F1–F5)"], ["KEYS · HELP", "API credentials · this list"], ["/", "Focus the command line from anywhere"],
   ];
   return (
     <Dialog className="keys">
@@ -174,6 +175,106 @@ function KeysModal() {
         </div>
         <div className={`keymsg ${bMsg ? (bMsg.ok ? "ok" : "bad") : ""}`}>{bMsg?.text}</div>
       </section>
+    </Dialog>
+  );
+}
+
+/* ---------------------------------------------------------------- symbol universe */
+function UniverseModal() {
+  const [u, setU] = useState<any>(null);
+  const [sel, setSel] = useState<string[]>([]);
+  const [q, setQ] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  useEffect(() => {
+    api("/api/universe").then((x) => { setU(x); setSel(x.selected); }).catch((e) => setErr(e.message));
+  }, []);
+  if (restarting) return <div className="restarting">RESTARTING WITH {sel.length} SYMBOLS · reconnecting…</div>;
+  const toggle = (sym: string) => setSel((cur) => (cur.includes(sym) ? cur.filter((x) => x !== sym) : cur.length >= (u?.max_symbols ?? 30) ? cur : [...cur, sym]));
+  const need = u ? Math.round(sel.length * u.rph_per_symbol) : 0;
+  const over = u && need > u.budget_per_hour;
+  const added: string[] = u ? sel.filter((x) => !u.selected.includes(x)) : [];
+  const dropped: string[] = u ? u.selected.filter((x: string) => !sel.includes(x)) : [];
+  const changed = added.length + dropped.length > 0;
+  const typed = q.trim().toUpperCase();
+  const typedSym = typed && !typed.endsWith("USDT") ? typed + "USDT" : typed;
+  const rows = (u?.candidates || []).filter((c: any) => !typed || c.symbol.includes(typed));
+  const apply = async (raise: boolean) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await post("/api/symbols", { symbols: sel, raise_budget: raise });
+      setRestarting(true);
+      // the service re-executes itself; wait for it to come back, then reload so every panel rebinds
+      const t0 = Date.now();
+      const wait = async () => {
+        try {
+          await api("/api/overview");
+          location.reload();
+        } catch {
+          if (Date.now() - t0 < 90_000) setTimeout(wait, 1500);
+          else setErr("service did not come back within 90 s");
+        }
+      };
+      setTimeout(wait, 4000);
+    } catch (e: any) {
+      setErr(e.message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog>
+      <div className="ph"><span className="code">UNIV</span>Symbol universe · signals Bybit mainnet · orders Bybit testnet</div>
+      <p>Pick the perps the bot watches and trades. Each needs ~{u ? fx(u.rph_per_symbol, 1) : "—"} Kairos requests/hour at the current {u?.decision_tf}m trading timeframe (one per bar close, plus consistency probes). Only perps listed on both mainnet and testnet can be chosen. Entries take only testnet liquidity within {u?.max_entry_slip_bp}bp of the best price, so a thin testnet book means small or unfilled orders.</p>
+      <div className="unibar">
+        <input type="text" placeholder="filter or type a symbol" value={q} onChange={(e) => setQ(e.target.value)} />
+        <span>SELECTED <b className="amb">{sel.length}</b>/{u?.max_symbols ?? 30}</span>
+        <span className={over ? "dn" : ""}>KAIROS <b>~{need}</b> / {u?.budget_per_hour ?? "—"} req/h</span>
+        {changed && <span className="muted">+{added.map(short).join(" +") || "0"} · −{dropped.map(short).join(" −") || "0"}</span>}
+        <span style={{ marginLeft: "auto" }} />
+        <button className="kbtn" onClick={() => u && setSel(u.selected)}>RESET</button>
+      </div>
+      {typedSym && u && !u.candidates.some((c: any) => c.symbol === typedSym) && (
+        <div className="unibar">
+          <span className="muted">{typedSym} is not in the top {u.candidates.length} by turnover.</span>
+          <button className="kbtn" onClick={() => !sel.includes(typedSym) && setSel([...sel, typedSym])}>ADD {typedSym} (validated on apply)</button>
+        </div>
+      )}
+      {!u ? <div className="empty">{err || "Loading the universe and testnet books…"}</div> : (
+        <div className="unigrid">
+          <table className="t">
+            <thead><tr><th /><th>Symbol</th><th className="r">24h turnover $</th><th className="r">24h</th><th>Testnet</th><th className="r">Testnet bid / ask ≤20bp $</th><th className="r">Spread bp</th><th>Note</th></tr></thead>
+            <tbody>
+              {rows.map((c: any) => {
+                const on = sel.includes(c.symbol), b = c.testnet_book;
+                const can = c.mainnet && c.testnet;
+                return (
+                  <tr key={c.symbol} className={`click ${on ? "on sel" : ""}`} onClick={() => can && toggle(c.symbol)} style={can ? undefined : { opacity: 0.45, cursor: "not-allowed" }}>
+                    <td><input type="checkbox" readOnly checked={on} disabled={!can} /></td>
+                    <td className="sym">{short(c.symbol)}</td>
+                    <td className="r">{usd(c.turnover24h)}</td>
+                    <td className={`r ${ud(c.pct24h)}`}>{sg(c.pct24h, 2, "%")}</td>
+                    <td>{c.testnet ? <span className="tag long">LISTED</span> : <span className="tag err">NOT LISTED</span>}</td>
+                    <td className="r">{b?.ok ? `${usd(b.bid_usd_20bp)} / ${usd(b.ask_usd_20bp)}` : b ? <span className="muted">{b.reason}</span> : "—"}</td>
+                    <td className="r">{b?.ok ? fx(b.spread_bp, 2) : "—"}</td>
+                    <td>{b?.ok && b.thin ? <span className="tag part" data-tip={`Less than $${usd(u.thin_depth_usd)} rests within 20bp on one side: orders will be small or partly filled`}>THIN BOOK</span> : ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {over && <div className="warnbox" style={{ margin: "6px 10px" }}><b className="amb">BUDGET.</b> {sel.length} symbols need ~{need} Kairos requests/hour, above the cap of {u.budget_per_hour}. Remove symbols, switch to a slower trading timeframe, or raise the cap.</div>}
+      {err && <div className="keymsg bad" style={{ margin: "6px 10px" }}>{err}</div>}
+      <div className="keyactions" style={{ margin: "8px 10px" }}>
+        {over
+          ? <button className="kbtn amber" disabled={busy || !changed} onClick={() => apply(true)}>APPLY + RAISE CAP TO {need}/H</button>
+          : <button className="kbtn amber" disabled={busy || !changed || !sel.length} onClick={() => apply(false)}>APPLY {sel.length} SYMBOLS</button>}
+        <button className="kbtn" onClick={() => setState({ modal: null })}>CANCEL</button>
+        <span className="muted">Applying saves to .env and restarts the service (~15 s). Open positions keep being managed; a symbol with an open bot trade cannot be removed. Auto-trade stays as it is.</span>
+      </div>
     </Dialog>
   );
 }

@@ -227,6 +227,9 @@ class Executor:
             blocked = self.check_guards(symbol)
             if blocked:
                 return {"ok": False, "reason": blocked}
+            same = sum(1 for p in self.positions if (p["side"] == "Buy") == (side == "long"))
+            if same >= self.s.max_same_side:
+                return {"ok": False, "reason": f"{same} {side} positions open (max same side {self.s.max_same_side})"}
             t0 = time.time()
             inst = self.instruments[symbol]
             tick, step = inst["tick_size"], inst["qty_step"]
@@ -247,10 +250,19 @@ class Executor:
             equity = float(self.wallet["equity"])
             risk_pct = min(self.s.explore_risk_pct, self.s.risk_per_trade_pct) if exploration else None
             qty_raw, _ = size_position(equity, sl_bp, ref, self.s, risk_pct)
-            qty = _floor_step(min(qty_raw, inst["max_qty"], depth), step)
+            # portfolio stop-risk cap: open risk + this trade <= max_open_risk_pct of equity (shrink to fit)
+            open_risk = sum(t["risk_usd"] or 0 for t in self.db.query("SELECT risk_usd FROM trades WHERE status IN ('open','opening')"))
+            room = equity * self.s.max_open_risk_pct / 100 - open_risk
+            per_unit_risk = ref * sl_bp / 10000
+            risk_qty = room / per_unit_risk if per_unit_risk > 0 else 0.0
+            qty = _floor_step(max(0.0, min(qty_raw, inst["max_qty"], depth, risk_qty)), step)
             if qty < inst["min_qty"] or qty * ref < inst["min_notional"]:
-                why = (f"only {depth:g} on the testnet book within {self.s.max_entry_slip_bp:g}bp of {ref}"
-                       if depth < qty_raw else f"size {qty} below exchange minimum")
+                if risk_qty < qty_raw and risk_qty <= depth:
+                    why = f"open stop-risk {open_risk:.0f} USDT leaves no room under {self.s.max_open_risk_pct}% of equity"
+                elif depth < qty_raw:
+                    why = f"only {depth:g} on the testnet book within {self.s.max_entry_slip_bp:g}bp of {ref}"
+                else:
+                    why = f"size {qty} below exchange minimum"
                 return {"ok": False, "reason": why}
 
             lev = min(self.s.max_leverage, int(inst["max_leverage"]))

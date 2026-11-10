@@ -16,8 +16,8 @@ export function MonitorView({ hidden }: { hidden: boolean }) {
     <main className="view on" style={hidden ? { display: "none" } : undefined}>
       <div className="grid-mon">
         <section className="pnl a-mon">
-          <Ph code="MON" right={<span className="live"><span className="pulse" />LIVE</span>}>Perp monitor</Ph>
-          <div className="pb tight"><Watchlist /></div>
+          <Ph code="MON" right={<><span className="live"><span className="pulse" />LIVE</span><button className="mini" onClick={() => setState({ modal: { kind: "universe" } })} data-tip="Choose which perps the bot watches and trades (UNIV)">SYMBOLS</button></>}>Perp monitor</Ph>
+          <div className="pb tight scroll watch-scroll"><Watchlist /></div>
           <div className="ph sub"><span className="code">WEI</span>Cross-asset<span className="ph-r">Yahoo · alternative.me</span></div>
           <div className="pb tight"><Macro /></div>
         </section>
@@ -185,6 +185,8 @@ function KairosPanel() {
     .forEach((l, i) => (binL["bin_" + i] = l + "%"));
   const top = (q: string) => (p[q] ? Object.entries<number>(p[q].probs).sort((a, b) => b[1] - a[1])[0] : null);
   const reg = top("regime"), crowd = top("crowding");
+  const v2 = d.p_up !== undefined && d.p_up !== null;
+  const raw = (x: any) => (isNum(x) ? <span className="muted" style={{ fontSize: 11 }}> raw {sg(x, 2)}</span> : null);
   return (
     <>
       <div className="kv-verdict">
@@ -193,8 +195,10 @@ function KairosPanel() {
         <span className="why">{d.reason}</span>
       </div>
       <div className="evrow">
-        <div><div className="l">EV long</div><div className={`n ${ud(d.ev_long_r)}`}>{sg(d.ev_long_r, 3)}R</div></div>
-        <div><div className="l">EV short</div><div className={`n ${ud(d.ev_short_r)}`}>{sg(d.ev_short_r, 3)}R</div></div>
+        <div data-tip={v2 ? `Calibrated EV (Kairos blended with this bracket's base rates).\nRaw Kairos ${sg(d.ev_long_raw_r, 3)}R · base rates alone ${sg(d.ev_long_base_r, 3)}R` : undefined}>
+          <div className="l">EV long{v2 && " · cal"}</div><div className={`n ${ud(d.ev_long_r)}`}>{sg(d.ev_long_r, 3)}R{v2 && raw(d.ev_long_raw_r)}</div></div>
+        <div data-tip={v2 ? `Calibrated EV.\nRaw Kairos ${sg(d.ev_short_raw_r, 3)}R · base rates alone ${sg(d.ev_short_base_r, 3)}R` : undefined}>
+          <div className="l">EV short{v2 && " · cal"}</div><div className={`n ${ud(d.ev_short_r)}`}>{sg(d.ev_short_r, 3)}R{v2 && raw(d.ev_short_raw_r)}</div></div>
         <div><div className="l">Setup 0–4</div><div className="n">{fx(d.setup_quality, 2)}</div></div>
       </div>
       {(["long_bracket", "short_bracket"] as const).map((q) => p[q] && (
@@ -204,11 +208,19 @@ function KairosPanel() {
         </div>
       ))}
       {p.return_distribution && <div className="qb"><div className="qt"><span>Return distribution</span><span>E = {sg(d.expected_move_in_d, 2)} × stop</span></div><PBars probs={p.return_distribution.probs} labels={binL} /></div>}
-      <div className="kfoot">
-        <div><b>Regime</b>{reg ? `${reg[0].replace("_", " ")} ${(100 * reg[1]).toFixed(0)}%` : "—"}</div>
-        <div><b>Crowding</b>{crowd ? `${crowd[0].replace("_", " ")} ${(100 * crowd[1]).toFixed(0)}%` : "—"}</div>
-        <div><b>Mean rev · data ok</b>{p.mean_reversion ? (100 * p.mean_reversion.p).toFixed(0) + "%" : "—"} · {p.data_sufficient ? (100 * p.data_sufficient.p).toFixed(0) + "%" : "—"}</div>
-      </div>
+      {v2 ? (
+        <div className="kfoot">
+          <div data-tip="Calibrated P(price higher at horizon); raw = Kairos alone"><b>P(up) cal · raw</b>{(100 * d.p_up).toFixed(0)}% · {isNum(d.p_up_raw) ? (100 * d.p_up_raw).toFixed(0) + "%" : "—"}</div>
+          <div data-tip="Calibrated P(price moves ≥ 1 stop either way within the horizon)"><b>Big move</b>{isNum(d.p_big_move) ? (100 * d.p_big_move).toFixed(0) + "%" : "—"}</div>
+          <div><b>Mean rev · w(Kairos)</b>{p.mean_reversion ? (100 * p.mean_reversion.p).toFixed(0) + "%" : "—"} · {isNum(d.weights?.long_bracket) ? fx(d.weights.long_bracket, 2) : "—"}</div>
+        </div>
+      ) : (
+        <div className="kfoot">
+          <div><b>Regime</b>{reg ? `${reg[0].replace("_", " ")} ${(100 * reg[1]).toFixed(0)}%` : "—"}</div>
+          <div><b>Crowding</b>{crowd ? `${crowd[0].replace("_", " ")} ${(100 * crowd[1]).toFixed(0)}%` : "—"}</div>
+          <div><b>Mean rev · data ok</b>{p.mean_reversion ? (100 * p.mean_reversion.p).toFixed(0) + "%" : "—"} · {p.data_sufficient ? (100 * p.data_sufficient.p).toFixed(0) + "%" : "—"}</div>
+        </div>
+      )}
       <div className="kfoot">
         <div><b>Asked</b>{hhmmss(d.ts)} ({age(Date.now() / 1000 - d.ts)} ago)</div>
         <div><b>Latency</b>{fx(d.latency_ms, 0)} ms</div>

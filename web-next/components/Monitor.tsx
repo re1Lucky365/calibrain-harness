@@ -1,5 +1,5 @@
 "use client";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, post } from "@/lib/api";
 import { loadOverview, selectSymbol, selectTf } from "@/lib/data";
 import { setState, useStore } from "@/lib/store";
@@ -345,39 +345,93 @@ function MarketMap({ visible }: { visible: boolean }) {
 }
 
 /* ---------------------------------------------------------------- order book (pushed) */
+const BOOK_LEVELS = 6;
+
+/** Cumulative depth: bids step down-left from the mid, asks step up-right. Area = resting notional. */
+function DepthChart({ bids, asks, d }: { bids: [number, number][]; asks: [number, number][]; d: number }) {
+  const W = 360, H = 64, PAD = 2;
+  let cb = 0, ca = 0;
+  const bPts = bids.map(([p, q]) => ({ p, c: (cb += p * q) }));
+  const aPts = asks.map(([p, q]) => ({ p, c: (ca += p * q) }));
+  const lo = bids[bids.length - 1][0], hi = asks[asks.length - 1][0];
+  const mid = (bids[0][0] + asks[0][0]) / 2;
+  const span = Math.max(mid - lo, hi - mid) || 1; // symmetric around the mid so sides compare fairly
+  const x = (p: number) => PAD + ((p - (mid - span)) / (2 * span)) * (W - 2 * PAD);
+  const mx = Math.max(cb, ca) || 1;
+  const y = (c: number) => H - 12 - (c / mx) * (H - 18);
+  const step = (pts: { p: number; c: number }[], start: number) => {
+    let path = `M${x(start).toFixed(1)},${y(0).toFixed(1)}`;
+    let prev = 0;
+    for (const pt of pts) path += ` L${x(pt.p).toFixed(1)},${y(prev).toFixed(1)} L${x(pt.p).toFixed(1)},${y(pt.c).toFixed(1)}`, (prev = pt.c);
+    return path;
+  };
+  const bidLine = step(bPts, bids[0][0]), askLine = step(aPts, asks[0][0]);
+  const close = (line: string, end: number) => `${line} L${x(end).toFixed(1)},${y(0).toFixed(1)} Z`;
+  return (
+    <svg className="depth" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
+      aria-label={`Depth: bids $${usd(cb)} vs asks $${usd(ca)} across ${bids.length} levels`}>
+      <path d={close(bidLine, bPts[bPts.length - 1].p)} fill="var(--up)" fillOpacity={0.14} />
+      <path d={bidLine} fill="none" stroke="var(--up)" strokeWidth={1.5} />
+      <path d={close(askLine, aPts[aPts.length - 1].p)} fill="var(--down)" fillOpacity={0.14} />
+      <path d={askLine} fill="none" stroke="var(--down)" strokeWidth={1.5} />
+      <line x1={x(mid)} x2={x(mid)} y1={2} y2={H - 12} stroke="var(--amber-dim)" strokeDasharray="2 2" />
+      {bPts.map((pt) => <rect key={"b" + pt.p} x={x(pt.p) - 3} y={0} width={6} height={H - 12} fill="transparent" data-tip={`≥ ${fx(pt.p, d)}: $${usd(pt.c)} bid`} />)}
+      {aPts.map((pt) => <rect key={"a" + pt.p} x={x(pt.p) - 3} y={0} width={6} height={H - 12} fill="transparent" data-tip={`≤ ${fx(pt.p, d)}: $${usd(pt.c)} ask`} />)}
+      <text x={PAD} y={H - 2} className="dl">{fx(mid - span, d)}</text>
+      <text x={W / 2} y={H - 2} textAnchor="middle" className="dl">mid {fx(mid, d + 1)}</text>
+      <text x={W - PAD} y={H - 2} textAnchor="end" className="dl">{fx(mid + span, d)}</text>
+    </svg>
+  );
+}
+
 function BookPanel() {
   const book = useStore((s) => s.book);
   const mkt = useStore((s) => s.mkt);
   const symbol = useStore((s) => s.symbol);
   const now = useNow(500);
   const b = book && book.symbol === symbol ? book : mkt?.symbol === symbol ? mkt?.book : null;
-  const d = Math.max(String(mkt?.ticker?.lastPrice ?? "").split(".")[1]?.length || 0, 0), N = 8;
+  const d = Math.max(String(mkt?.ticker?.lastPrice ?? "").split(".")[1]?.length || 0, 0);
   const head = <Ph code="DOM" right={book?.ts ? `push ${age((now - book.ts) / 1000)} ago` : ""}>Order book · mainnet</Ph>;
   if (!b?.bids?.length || !b?.asks?.length) return <>{head}<div className="empty">Book loading…</div></>;
-  const asks = b.asks.slice(0, N), bids = b.bids.slice(0, N);
-  let ca = 0;
-  const askRows = asks.map(([p, q]: [number, number]) => { ca += p * q; return [p, q, ca]; });
-  let cb = 0;
-  const bidRows = bids.map(([p, q]: [number, number]) => { cb += p * q; return [p, q, cb]; });
-  const mx = Math.max(ca, cb), bb = bids[0][0], ba = asks[0][0], mid = (bb + ba) / 2, spr = (10000 * (ba - bb)) / mid, imb = (cb - ca) / (cb + ca);
-  const Row = ({ side, r }: { side: string; r: number[] }) => (
-    <tr className={side}><td className={side === "ask" ? "dn" : "up"}>{fx(r[0], d)}</td><td className="r">{r[1].toLocaleString("en-US", { maximumFractionDigits: 4 })}</td>
-      <td className="r">{usd(r[2])}<span className="bar" style={{ width: `${((100 * r[2]) / mx).toFixed(1)}%` }} /></td></tr>
-  );
+  const bids = b.bids as [number, number][], asks = b.asks as [number, number][];
+  const bb = bids[0][0], ba = asks[0][0], mid = (bb + ba) / 2, spr = (10000 * (ba - bb)) / mid;
+  const levels = [...asks.slice(0, BOOK_LEVELS).map((l) => ["ask", ...l] as const), ...bids.slice(0, BOOK_LEVELS).map((l) => ["bid", ...l] as const)];
+  const maxLvl = Math.max(...levels.map(([, p, q]) => p * q));
+  let ca = 0, cb2 = 0;
+  const askRows = asks.slice(0, BOOK_LEVELS).map(([p, q]) => ({ p, q, n: p * q, c: (ca += p * q) }));
+  const bidRows = bids.slice(0, BOOK_LEVELS).map(([p, q]) => ({ p, q, n: p * q, c: (cb2 += p * q) }));
+  const allBid = bids.reduce((a, [p, q]) => a + p * q, 0), allAsk = asks.reduce((a, [p, q]) => a + p * q, 0);
+  const imb = (allBid - allAsk) / (allBid + allAsk);
+  const Row = ({ side, r }: { side: "ask" | "bid"; r: { p: number; q: number; n: number; c: number } }) => {
+    const wall = r.n >= maxLvl * 0.999 && levels.length > 2;
+    return (
+      <tr className={side} data-tip={`${side === "ask" ? "Ask" : "Bid"} ${fx(r.p, d)} · ${r.q.toLocaleString("en-US", { maximumFractionDigits: 4 })} · $${usd(r.n)}\n${(((r.p - mid) / mid) * 1e4).toFixed(1)} bp from mid · cumulative $${usd(r.c)}`}>
+        <td className={side === "ask" ? "dn" : "up"}>{fx(r.p, d)}</td>
+        <td className="r">{r.q.toLocaleString("en-US", { maximumFractionDigits: 4 })}</td>
+        <td className="r lvl">{wall && <span className="wall">WALL</span>}{usd(r.n)}<span className="bar" style={{ width: `${((100 * r.n) / maxLvl).toFixed(1)}%` }} /></td>
+        <td className="r muted">{usd(r.c)}</td>
+      </tr>
+    );
+  };
   return (
     <>
       {head}
-      <div className="pb tight ladder">
+      <div className="pb tight scroll ladder">
+        <DepthChart bids={bids} asks={asks} d={d} />
+        <div className="imb" data-tip={`All ${bids.length + asks.length} pushed levels: bids $${usd(allBid)} vs asks $${usd(allAsk)}`}>
+          <span className="up">BID ${usd(allBid)}</span>
+          <span className="imb-bar"><span style={{ width: `${(50 + 50 * imb).toFixed(1)}%` }} /></span>
+          <span className="dn">${usd(allAsk)} ASK</span>
+          <span className="muted">{sg(imb * 100, 0, "%")}</span>
+        </div>
         <table className="t">
-          <thead><tr><th>Price</th><th className="r">Size</th><th className="r">Cum $</th></tr></thead>
+          <thead><tr><th>Price</th><th className="r">Size</th><th className="r">Level $</th><th className="r">Cum $</th></tr></thead>
           <tbody>
-            {[...askRows].reverse().map((r: number[], i: number) => <Row key={"a" + i} side="ask" r={r} />)}
-            <tr className="mid"><td colSpan={3}>SPREAD {fx(ba - bb, d)} · {fx(spr, 2)} bp · MID {fx(mid, d + 1)}</td></tr>
-            {bidRows.map((r: number[], i: number) => <Row key={"b" + i} side="bid" r={r} />)}
+            {[...askRows].reverse().map((r) => <Row key={"a" + r.p} side="ask" r={r} />)}
+            <tr className="mid"><td colSpan={4}>SPREAD {fx(ba - bb, d)} · {fx(spr, 2)} bp · MID {fx(mid, d + 1)}</td></tr>
+            {bidRows.map((r) => <Row key={"b" + r.p} side="bid" r={r} />)}
           </tbody>
         </table>
-        <div className="depthbar" data-tip={`Top-${N} depth: bids $${usd(cb)} vs asks $${usd(ca)}`}><span style={{ width: `${(50 + 50 * imb).toFixed(1)}%`, background: "var(--up)" }} /><span style={{ flex: 1, background: "var(--down)" }} /></div>
-        <div className="muted" style={{ padding: "0 8px", fontSize: 11 }}>TOP-{N} IMBALANCE {sg(imb, 3)} (+ = bid heavy)</div>
       </div>
     </>
   );
@@ -438,8 +492,9 @@ function Tape() {
 }
 
 /* ---------------------------------------------------------------- stats */
+// Pairs are direct grid children (a wrapper with display: contents would drop their padding and borders).
 const KV = ({ rows }: { rows: [string, React.ReactNode, string?][] }) => (
-  <div className="kv">{rows.map(([k, v, tp]) => <div key={k} style={{ display: "contents" }}><div className="k" data-tip={tp}>{k}</div><div className="v">{v}</div></div>)}</div>
+  <div className="kv">{rows.map(([k, v, tp]) => <Fragment key={k}><div className="k" data-tip={tp}>{k}</div><div className="v">{v}</div></Fragment>)}</div>
 );
 export { KV };
 

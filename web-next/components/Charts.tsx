@@ -155,7 +155,7 @@ export function PerfChart() {
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<Record<string, ISeriesApi<"Line">>>({});
   const perf = useStore((s) => s.perf);
-  const order: string[] = useStore((s) => s.ov?.settings.symbols) || [];
+  const order = usePerfOrder();
 
   useEffect(() => {
     chart.current = createChart(host.current!, { ...(baseOpts() as any), handleScroll: false, handleScale: false });
@@ -167,6 +167,9 @@ export function PerfChart() {
   }, []);
   useEffect(() => {
     if (!chart.current) return;
+    for (const [sym, ser] of Object.entries(series.current)) {
+      if (!order.includes(sym)) { chart.current.removeSeries(ser); delete series.current[sym]; }
+    }
     order.forEach((sym, i) => {
       if (!perf[sym]) return;
       if (!series.current[sym])
@@ -181,9 +184,23 @@ export function PerfChart() {
   return <div className="pb chart-wrap"><div ref={host} className="chart-host" /></div>;
 }
 
+/** At most 5 series (the validated palette has 5 hues; colours are never cycled):
+ * the loaded symbol plus the first others in the universe. */
+function usePerfOrder(): string[] {
+  const all: string[] = useStore((s) => s.ov?.settings.symbols) || [];
+  const sel = useStore((s) => s.symbol);
+  const key = `${sel}|${all.join(",")}`;
+  const ref = useRef<{ key: string; v: string[] }>({ key: "", v: [] });
+  if (ref.current.key !== key) {
+    const rest = all.filter((x) => x !== sel);
+    ref.current = { key, v: (sel && all.includes(sel) ? [sel, ...rest] : rest).slice(0, 5).sort((a, b) => all.indexOf(a) - all.indexOf(b)) };
+  }
+  return ref.current.v;
+}
+
 export function PerfLegend() {
   const perf = useStore((s) => s.perf);
-  const order: string[] = useStore((s) => s.ov?.settings.symbols) || [];
+  const order = usePerfOrder();
   return (
     <span className="ph-r">
       {order.map((s, i) => {

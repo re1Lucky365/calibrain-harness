@@ -129,3 +129,27 @@ ctb/engine.py             orchestration
 ctb/server.py             API + SSE + static
 web/                      dashboard (vanilla JS, lightweight-charts)
 ```
+
+## Execution accuracy (testnet)
+
+Bybit testnet books are thin and the testnet mark price follows mainnet while its book can trade
+100+ bp away. Every number the bot records therefore comes from what Bybit actually filled:
+
+- **Entries** are IOC limit orders capped `CTB_MAX_ENTRY_SLIP_BP` (10 bp) past the best testnet
+  price and sized to the depth inside that cap. The filled quantity is what gets recorded.
+- **Exits** (`CTB_EXIT_MODE=managed`, the default): the target is a resting reduce-only limit at the
+  target price (fills at it or better); the stop is watched on the testnet bid/ask stream and
+  exited with reduce-only IOC limits that widen `CTB_EXIT_CHASE_STEP_BP` per step. An exchange
+  stop at `CTB_BACKSTOP_MULT` x the distance, triggered on mark price, covers the bot being down.
+- **P&L, fees, exit price and R** are summed from every Bybit closed-P&L row of the exit (one exit
+  can fill in several pieces) and R uses the stop that was actually live. `scripts/backfill_trades.py`
+  re-books older trades the same way.
+- Entry/exit slippage, fill ratio, entry latency and fill counts are stored per trade and shown in
+  EVAL -> Execution quality and in the TRADES screen.
+
+## Front end and latency
+
+The terminal UI is a Next.js static export (`web-next/`, see its README) served at `/`. The browser
+gets live data over one WebSocket (`/ws`) instead of polling. The bot itself listens to Bybit's
+mainnet public stream, the testnet ticker stream and the testnet private stream (fills, positions,
+wallet), and decides 0.3 s after each bar closes (`CTB_BAR_SETTLE_S`).

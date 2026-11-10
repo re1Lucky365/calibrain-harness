@@ -35,6 +35,23 @@ def j(data: Any, status: int = 200) -> web.Response:
 
 
 @web.middleware
+async def dev_cors(request: web.Request, handler):
+    """Let `next dev` on :3000 call this API while developing the UI. Only those two origins."""
+    origin = request.headers.get("Origin", "")
+    dev = origin.split("://", 1)[-1] in DEV_ORIGINS
+    if dev and request.method == "OPTIONS":
+        resp = web.Response(status=204)
+    else:
+        resp = await handler(request)
+    if dev:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Vary"] = "Origin"
+    return resp
+
+
+@web.middleware
 async def same_origin_only(request: web.Request, handler):
     """Block cross-site requests: any web page you visit could otherwise POST to this local
     server (toggle trading, swap keys). Require JSON (forces a CORS preflight we never grant)
@@ -50,7 +67,7 @@ async def same_origin_only(request: web.Request, handler):
 
 def make_app(engine: Engine) -> web.Application:
     s = engine.s
-    app = web.Application(middlewares=[same_origin_only])
+    app = web.Application(middlewares=[dev_cors, same_origin_only])
     routes = web.RouteTableDef()
 
     @routes.get("/")
@@ -75,7 +92,7 @@ def make_app(engine: Engine) -> web.Application:
                        "last_error": engine.last_decision_error, "probe_rate": engine.probe_rate, "inflight": sorted(engine.inflight)},
             "account": ex.account_view() if ex else None,
             "executor_error": (ex.sync_error if ex else "no Bybit testnet keys configured"),
-            "labelled_total": engine.labeler.labeled,
+            "labelled_total": (engine.db.one("SELECT COUNT(*) n FROM decisions WHERE label_json IS NOT NULL") or {}).get("n", 0),
         })
 
     @routes.get("/api/market/{symbol}")
@@ -432,6 +449,10 @@ def make_app(engine: Engine) -> web.Application:
             return web.FileResponse(WEB / "index.html")
         app.router.add_get("/legacy", legacy)
         app.router.add_static("/_next", NEXT_OUT / "_next")
+
+        async def favicon(_: web.Request) -> web.FileResponse:
+            return web.FileResponse(NEXT_OUT / "favicon.ico")
+        app.router.add_get("/favicon.ico", favicon)
     app.router.add_static("/static", WEB)
 
     async def on_startup(_: web.Application) -> None:

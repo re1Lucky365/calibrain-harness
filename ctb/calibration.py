@@ -15,7 +15,7 @@ also caps how far a single over-confident answer can move expected value.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .db import DB
 from .kairos.questions import BRACKET_IDS, RETURN_BIN_IDS
@@ -82,23 +82,34 @@ def fit(rows: list[tuple[list[float], list[float], int]]) -> dict[str, Any]:
 
 
 class Calibrator:
-    def __init__(self, db: DB, qset_prefix: str = "perp-v2"):
+    """Weights are fitted per trading timeframe: a 1m bar with a 30 min horizon is a different
+    question from a 5m bar with a 2 h horizon, so one timeframe's weights never drive another's."""
+
+    def __init__(self, db: DB, qset_prefix: str = "perp-v2", tf_fn: Callable[[], str] | None = None):
         self.db = db
         self.qset_prefix = qset_prefix
+        self.tf_fn = tf_fn
+        self.tf: str | None = None
         self.report: dict[str, Any] = {}
         self.weights: dict[str, float] = {q: PRIOR_W for q in CALIBRATED}
         self.fitted_at = 0.0
 
     def refit(self) -> dict[str, float]:
-        decs = self.db.query(
-            "SELECT parsed_json, label_json, decision_json, sl_bp FROM decisions WHERE probe IS NULL AND error_kind IS NULL "
-            "AND label_json IS NOT NULL AND qset_version LIKE ?", (self.qset_prefix + "%",))
+        self.tf = self.tf_fn() if self.tf_fn else None
+        sql = ("SELECT parsed_json, label_json, decision_json, sl_bp FROM decisions WHERE probe IS NULL AND error_kind IS NULL "
+               "AND label_json IS NOT NULL AND qset_version LIKE ?")
+        params: list[Any] = [self.qset_prefix + "%"]
+        if self.tf:
+            sql += " AND decision_tf=?"
+            params.append(self.tf)
+        decs = self.db.query(sql, params)
         self.report = {q: fit(rows_for(q, decs)) for q in CALIBRATED}
         self.weights = {q: r["w"] for q, r in self.report.items()}
         self.fitted_at = time.time()
         return self.weights
 
     def maybe_refit(self, every_s: float = 900) -> dict[str, float]:
-        if time.time() - self.fitted_at > every_s:
+        tf_changed = self.tf_fn is not None and self.tf_fn() != self.tf
+        if tf_changed or time.time() - self.fitted_at > every_s:
             self.refit()
         return self.weights

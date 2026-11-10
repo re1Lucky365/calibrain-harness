@@ -141,6 +141,7 @@ class Executor:
         self.price_fn: Callable[[str], dict[str, Any]] | None = None  # testnet ticker, attached by the engine
         self._managed: dict[str, dict[str, Any]] = {}  # symbol -> open managed trade (stop watch)
         self._exiting: set[str] = set()
+        self.run_id_fn: Callable[[], int | None] = lambda: None  # attached by the engine
 
     async def start(self) -> None:
         await self.client.sync_time()
@@ -289,7 +290,7 @@ class Executor:
                 "status": "opening", "ev_r": ev_r, "risk_usd": qty * ref * sl_bp / 10000, "mode": mode, "notes": mode,
                 "requested_qty": qty, "ref_price": ref, "cap_price": cap, "decision_price": decision_price,
                 "book_spread_bp": round(spread_bp, 2), "planned_sl_bp": sl_bp, "planned_tp_bp": tp_bp,
-                "exit_mode": self.s.exit_mode,
+                "exit_mode": self.s.exit_mode, "run_id": self.run_id_fn(),
             })
             try:
                 res = await self.client.market_order(symbol, "buy" if buy else "sell", _fmt(qty, step), link_id=link,

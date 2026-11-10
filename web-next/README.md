@@ -21,4 +21,4 @@ npm run build        # writes ./out, picked up by the Python server on its next 
 npm run dev          # http://localhost:3000, talks to the API on 127.0.0.1:8800
 ```
 
-The previous vanilla-JS terminal stays available at `/legacy`.
+If the export has not been built, the Python server answers `/` with a short page showing the build command. A new build is picked up on the next page load, without restarting the server.

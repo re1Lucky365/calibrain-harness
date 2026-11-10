@@ -12,6 +12,7 @@ from typing import Any
 
 import aiohttp
 
+from .broker.bybit_private_ws import BybitPrivateStream
 from .broker.bybit_rest import BybitTestnet
 from .broker.executor import Executor
 from .config import Settings, save_env
@@ -93,6 +94,13 @@ class Engine:
             self.db.event("error", "executor_start", str(exc))
             self.executor.sync_error = str(exc)
         self._reconcile_task = asyncio.create_task(self.executor.reconcile_loop(), name="reconcile")
+        old = getattr(self, "_private_stream", None)
+        if old:
+            old.stop()
+            self._private_task.cancel()
+        self._private_stream = BybitPrivateStream(self.s.bybit_api_key, self.s.bybit_api_secret, self.session, self.executor.on_private)
+        self.executor.stream = self._private_stream
+        self._private_task = asyncio.create_task(self._private_stream.run(), name="private_ws")
 
     # ------------------------------------------------------------------ keys (set from the dashboard)
     async def set_bybit_keys(self, api_key: str, api_secret: str) -> dict[str, Any]:
@@ -147,6 +155,9 @@ class Engine:
         self.context.stop()
         if getattr(self, "_reconcile_task", None):
             self._reconcile_task.cancel()
+        if getattr(self, "_private_stream", None):
+            self._private_stream.stop()
+            self._private_task.cancel()
         for t in self.tasks:
             t.cancel()
         if self.session:
@@ -171,7 +182,7 @@ class Engine:
             self.emit("bar", {"symbol": symbol})
         if tf != self.s.decision_tf:
             return
-        await asyncio.sleep(2)  # let trades/book settle for the just-closed bar
+        await asyncio.sleep(self.s.bar_settle_s)  # let the last trades of the closed bar arrive
         await self.decide(symbol)
 
     async def decide(self, symbol: str, *, force_probe: bool = False) -> dict[str, Any] | None:
@@ -203,7 +214,8 @@ class Engine:
                 if decision.action in ("long", "short") and self.executor:
                     ev = decision.ev_long_r if decision.action == "long" else decision.ev_short_r
                     res = await self.executor.open(symbol=symbol, side=decision.action, sl_bp=meta["sl_bp"], tp_bp=meta["tp_bp"],
-                                                   decision_id=row["id"], ev_r=ev or 0.0, exploration=decision.exploration)
+                                                   decision_id=row["id"], ev_r=ev or 0.0, exploration=decision.exploration,
+                                                   decision_price=meta["price"])
                     if not res.get("ok"):
                         self.emit("event", self.db.event("info", "signal_not_traded", f"{decision.action} signal not traded: {res.get('reason')}", symbol))
             else:

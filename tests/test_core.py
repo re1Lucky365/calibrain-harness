@@ -373,3 +373,40 @@ def test_runs_stamp_history_and_rotate(tmp_path):
     assert r3["id"] == 3 and r3["name"].startswith("Run 3") and r3["config_json"]["exploration_mode"] is False
     assert db.one("SELECT ended_ts FROM runs WHERE id=2")["ended_ts"] is not None
     assert runs.ensure(db, strict())["id"] == 3  # a restart keeps the open run
+
+
+def test_managed_stop_needs_mainnet_confirmation(tmp_path):
+    """10 Nov: testnet XRP fell 4.4% in a minute while mainnet rose; a stop must not sell that hole."""
+    import asyncio
+    import time as _t
+    from ctb.broker.executor import Executor
+    from ctb.db import DB
+    db = DB(tmp_path / "t.db")
+    events, closes = [], []
+    ex = Executor(strict(), db, client=None, emit=lambda k, d: events.append(d))
+    tid = db.insert("trades", {"symbol": "XRPUSDT", "side": "long", "status": "open", "exit_mode": "managed", "qty": 1,
+                               "sl_price": 1.0471, "tp_price": 1.0816, "decision_price": 1.0597, "planned_sl_bp": 120})
+    ex.positions = [{"symbol": "XRPUSDT", "side": "Buy", "size": "1"}]
+    tn, mn = {"bid1Price": "1.0200"}, {"bid1Price": "1.0640"}
+    ex.price_fn, ex.mainnet_fn = (lambda s: tn), (lambda s: mn)
+    ex.mainnet_age_fn = lambda s: _t.time()
+
+    async def fake_close(symbol, reason, locked=False):
+        closes.append(reason)
+        return True
+    ex.close = fake_close
+    ex._refresh_managed()
+    asyncio.run(ex.check_stop("XRPUSDT"))
+    assert closes == [] and any("dislocation" in (e.get("kind") or "") for e in events)  # testnet only: hold
+    mn["bid1Price"] = "1.0460"  # mainnet stop = 1.0597 * (1 - 1.2%) = 1.0470
+    asyncio.run(ex.check_stop("XRPUSDT"))
+    asyncio.run(ex.check_stop("XRPUSDT"))
+    assert closes == ["stop_loss"]  # fires once
+    assert db.one("SELECT stop_trigger_px FROM trades WHERE id=?", (tid,))["stop_trigger_px"] == 1.046
+    # stale mainnet data falls back to the testnet price so protection never lapses
+    ex._stop_fired.clear()
+    closes.clear()
+    mn["bid1Price"] = "1.0640"
+    ex.mainnet_age_fn = lambda s: _t.time() - 60
+    asyncio.run(ex.check_stop("XRPUSDT"))
+    assert closes == ["stop_loss"]

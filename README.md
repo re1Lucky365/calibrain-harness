@@ -1,13 +1,13 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/calibrain-logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/brand/calibrain-logo-light.svg">
-    <img alt="Calibrain" src="docs/brand/calibrain-logo-light.svg" width="440">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/calibrain-harness-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/brand/calibrain-harness-logo-light.svg">
+    <img alt="Calibrain Harness" src="docs/brand/calibrain-harness-logo-light.svg" width="420">
   </picture>
 </p>
 
 <p align="center">
-  <b>Trade crypto perpetuals with fast classification models, and find out honestly whether they have an edge.</b>
+  <b>A forward-testing harness for trading with fast classification models: plug a model in, run it on live perpetual markets, and find out honestly whether it has an edge.</b>
 </p>
 
 <p align="center">
@@ -20,18 +20,18 @@
 </p>
 
 > [!WARNING]
-> **Calibrain is under active development.** It trades on the **Bybit testnet only** (the host is
+> **Calibrain Harness is under active development.** It trades on the **Bybit testnet only** (the host is
 > hard-coded; there is no mainnet switch). Interfaces, question sets and defaults change between
 > commits. Nothing here is financial advice.
 
 <p align="center">
-  <a href="docs/media/calibrain-demo.mp4"><img alt="Calibrain terminal demo (click for the full video)" src="docs/media/calibrain-demo.gif" width="880"></a>
-  <br><sub>Live terminal: monitor, Kairos signals, evaluation and news. <a href="docs/media/calibrain-demo.mp4">Watch the full 1-minute video</a>.</sub>
+  <a href="docs/media/calibrain-harness-demo.mp4"><img alt="Calibrain Harness terminal demo (click for the full video)" src="docs/media/calibrain-harness-demo.gif" width="880"></a>
+  <br><sub>Live terminal: monitor, Kairos signals, evaluation and news. <a href="docs/media/calibrain-harness-demo.mp4">Watch the full 1-minute video</a>.</sub>
 </p>
 
 ## What it is
 
-Calibrain connects a **high-speed classification model** to perpetual futures and treats every answer
+Calibrain Harness connects a **high-speed classification model** to perpetual futures and treats every answer
 as a forecast that will be checked. On each closed bar it asks the model a small set of
 **labellable questions** ("which is touched first in the next 2 h: +1.0% or −0.6%?"), turns the
 probabilities into expected value in code, trades the ones that clear the gates on Bybit testnet
@@ -42,7 +42,7 @@ You get two things: a trading bot, and an honest evaluation of the model behind 
 
 ### Supported models
 
-Calibrain is built for any fast classifier that returns calibrated probabilities over a fixed set
+Calibrain Harness is built for any fast classifier that returns calibrated probabilities over a fixed set
 of options, such as **Kairos**, **Jev** and similar models. Right now only **Kairos** is supported.
 
 | Model | Status |
@@ -75,8 +75,8 @@ of options, such as **Kairos**, **Jev** and similar models. Right now only **Kai
 Requirements: Python 3.12, Node.js 20+ with npm, a Kairos API key and Bybit **testnet** API keys.
 
 ```bash
-git clone https://github.com/zadescoxp/calibrain.git
-cd calibrain
+git clone https://github.com/zadescoxp/calibrain-harness.git
+cd calibrain-harness
 
 # 1. Python service (data, model calls, execution, API)
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
@@ -317,7 +317,7 @@ never commit `.env` or anything under `data/`.
 
 ## Disclaimer
 
-Calibrain is research software for testnet forward-testing. It is not investment advice, it has not
+Calibrain Harness is research software for testnet forward-testing. It is not investment advice, it has not
 been audited, and past testnet results say nothing reliable about future returns.
 
 ## License

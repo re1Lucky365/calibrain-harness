@@ -26,6 +26,7 @@ from .kairos.questions import QUESTION_SET_VERSION, build_questions
 from .market.bybit_public import BybitPublicFeed
 from .market.context import ContextFeed
 from .market.store import MarketStore
+from .market.testnet_ws import TestnetTickerStream
 from .policy import decide
 
 log = logging.getLogger("ctb.engine")
@@ -64,6 +65,8 @@ class Engine:
                                    model=self.s.kairos_model, timeout_s=self.s.kairos_timeout_s)
         self.labeler = Labeler(self.db, self.session, self.emit)
         self.feed.on_bar_close.append(self.on_bar_close)
+        self.testnet_stream = TestnetTickerStream(self.store, self.session, self.s.symbols)
+        self.testnet_stream.on_tick.append(self._on_testnet_tick)
         self.context.on_news.append(self.on_news)
         # the hourly budget must survive restarts, so seed it from what was actually sent
         hour_ago = time.time() - 3600
@@ -76,6 +79,7 @@ class Engine:
             await self._start_executor()
         self.tasks = [
             asyncio.create_task(self.feed.ws_loop(), name="ws"),
+            asyncio.create_task(self.testnet_stream.run(), name="testnet_ws"),
             asyncio.create_task(self.feed.poll_loop(), name="poll"),
             asyncio.create_task(self.context.loop(), name="context"),
             asyncio.create_task(self.labeler.loop(), name="labeler"),
@@ -100,6 +104,7 @@ class Engine:
             self._private_task.cancel()
         self._private_stream = BybitPrivateStream(self.s.bybit_api_key, self.s.bybit_api_secret, self.session, self.executor.on_private)
         self.executor.stream = self._private_stream
+        self.executor.price_fn = lambda sym: self.store[sym].testnet_ticker
         self._private_task = asyncio.create_task(self._private_stream.run(), name="private_ws")
 
     # ------------------------------------------------------------------ keys (set from the dashboard)
@@ -150,8 +155,13 @@ class Engine:
         ans = res.answers.get("is_check", {})
         return {"ok": True, "latency_ms": round(res.latency_ms), "answer_noul": ans.get("noul"), "model": res.metadata.get("model")}
 
+    async def _on_testnet_tick(self, symbol: str, t: dict) -> None:
+        if self.executor:
+            await self.executor.on_testnet_tick(symbol, t)
+
     async def stop(self) -> None:
         self.feed.stop()
+        self.testnet_stream.stop()
         self.context.stop()
         if getattr(self, "_reconcile_task", None):
             self._reconcile_task.cancel()

@@ -19,6 +19,7 @@ from .engine import Engine
 from .evaluation import metrics as metrics_mod
 from .evaluation import report as report_mod
 from .market.store import TIMEFRAMES
+from . import runs as runs_mod
 from . import universe as universe_mod
 
 log = logging.getLogger("ctb.server")
@@ -85,6 +86,7 @@ def make_app(engine: Engine) -> web.Application:
         st = engine.store
         return j({
             "settings": s.public_view(),
+            "run": getattr(engine, "run", None),
             "uptime_s": time.time() - engine.started_at,
             "data": {
                 "ws_connected": st.ws_connected, "ws_messages": st.ws_messages, "ws_last_msg_age_s": time.time() - st.ws_last_msg if st.ws_last_msg else None,
@@ -139,8 +141,51 @@ def make_app(engine: Engine) -> web.Application:
         return j(r)
 
     @routes.get("/api/trades")
-    async def trades(_: web.Request) -> web.Response:
-        return j(engine.db.query("SELECT * FROM trades ORDER BY id DESC LIMIT 300"))
+    async def trades(req: web.Request) -> web.Response:
+        run = req.query.get("run")
+        if run:
+            return j(engine.db.query("SELECT * FROM trades WHERE run_id=? ORDER BY id DESC LIMIT 1000", (int(run),)))
+        return j(engine.db.query("SELECT * FROM trades ORDER BY id DESC LIMIT 1000"))
+
+    def run_summary(m: dict[str, Any]) -> dict[str, Any]:
+        t, e, mq, ops = m["trading"], m.get("edge") or {}, m.get("model_quality") or {}, m["ops"]
+        return {
+            "decisions": ops["requests"], "errors": ops["requests"] - ops["ok"], "labelled": m.get("labelled"),
+            "latency_p50_ms": ops.get("latency_ms_p50"),
+            "closed": t.get("closed", 0), "net_pnl": t.get("net_pnl_usdt"), "fees": t.get("fees_usdt"), "win_rate": t.get("win_rate"),
+            "avg_r": t.get("avg_r"), "profit_factor": t.get("profit_factor"), "max_dd": t.get("max_drawdown_usdt"),
+            "by_side": t.get("by_side"), "attempts": t.get("attempts_by_status"),
+            "entry_slip_bp": ((t.get("execution") or {}).get("entry_slip_bp") or {}).get("mean"),
+            "stop_slip_bp": ((t.get("execution") or {}).get("stop_exit_slip_bp") or {}).get("mean"),
+            "strict_n": e.get("strict_signals_n"), "strict_r": e.get("strict_signals_mean_r"),
+            "explore_n": e.get("exploration_signals_n"), "explore_r": e.get("exploration_signals_mean_r"),
+            "skill_long": (mq.get("long_bracket") or {}).get("skill_vs_climatology"),
+            "skill_short": (mq.get("short_bracket") or {}).get("skill_vs_climatology"),
+            "vs_base_long": ((m.get("vs_base_rates") or {}).get("long_bracket") or {}).get("kairos_skill_vs_base"),
+        }
+
+    @routes.get("/api/runs")
+    async def runs(_: web.Request) -> web.Response:
+        out = []
+        for r in engine.db.query("SELECT * FROM runs ORDER BY id"):
+            m = await asyncio.to_thread(metrics_mod.compute, engine.db, run_id=r["id"])
+            open_n = (engine.db.one("SELECT COUNT(*) n FROM trades WHERE run_id=? AND status IN ('open','opening')", (r["id"],)) or {}).get("n", 0)
+            out.append({**r, "current": r["ended_ts"] is None, "open_trades": open_n, **run_summary(m)})
+        m = await asyncio.to_thread(metrics_mod.compute, engine.db)
+        overall = {"id": None, "name": "Overall", "started_ts": out[0]["started_ts"] if out else None, "ended_ts": None,
+                   "open_trades": (engine.db.one("SELECT COUNT(*) n FROM trades WHERE status IN ('open','opening')") or {}).get("n", 0),
+                   **run_summary(m)}
+        return j({"runs": out, "overall": overall})
+
+    @routes.post("/api/runs/start")
+    async def run_start(req: web.Request) -> web.Response:
+        body = await req.json()
+        if engine.db.one("SELECT id FROM trades WHERE status IN ('open','opening') LIMIT 1"):
+            return j({"error": "close the open bot trades first (KILL, or wait for their exits) so each run's P&L stays its own"}, 409)
+        engine.run = runs_mod.start(engine.db, s, name=(body.get("name") or None), notes=body.get("notes"))
+        engine.emit("event", engine.db.event("warn", "run", f"started {engine.run['name']}"))
+        engine.emit("settings", {})
+        return j(engine.run)
 
     @routes.get("/api/news")
     async def news(_: web.Request) -> web.Response:
@@ -157,8 +202,9 @@ def make_app(engine: Engine) -> web.Application:
         hours = req.query.get("hours")
         tf = req.query.get("tf") or None
         qset = req.query.get("qset") or None
+        run = int(req.query["run"]) if req.query.get("run") else None
         since = time.time() - float(hours) * 3600 if hours else None
-        m = await asyncio.to_thread(metrics_mod.compute, engine.db, symbol=sym, since_ts=since, decision_tf=tf, qset=qset)
+        m = await asyncio.to_thread(metrics_mod.compute, engine.db, symbol=sym, since_ts=since, decision_tf=tf, qset=qset, run_id=run)
         m["calibration_weights"] = {"weights": engine.calibrator.weights, "fitted_at": engine.calibrator.fitted_at,
                                     "report": engine.calibrator.report}
         m["observations"] = report_mod.observations(m)

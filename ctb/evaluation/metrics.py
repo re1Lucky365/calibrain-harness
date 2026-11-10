@@ -171,8 +171,11 @@ def binary_block(name: str, rows: list[tuple[float, bool]]) -> dict[str, Any]:
 
 
 def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None, decision_tf: str | None = None,
-            qset: str | None = None) -> dict[str, Any]:
+            qset: str | None = None, run_id: int | None = None) -> dict[str, Any]:
     where, params = ["probe IS NULL"], []
+    if run_id:
+        where.append("run_id=?")
+        params.append(run_id)
     if qset:
         where.append("qset_version LIKE ?")
         params.append(qset + "%")
@@ -188,7 +191,7 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
     w = " AND ".join(where)
     decs = db.query(f"SELECT id, ts, symbol, parsed_json, issues_json, usage_json, latency_ms, attempts, error_kind, error_msg, "
                     f"decision_json, action, label_json, sl_bp, tp_bp, model_meta_json, request_bytes, qset_version FROM decisions WHERE {w} ORDER BY ts", params)
-    out: dict[str, Any] = {"generated_from": {"decisions": len(decs), "symbol": symbol, "decision_tf": decision_tf, "qset": qset}}
+    out: dict[str, Any] = {"generated_from": {"decisions": len(decs), "symbol": symbol, "decision_tf": decision_tf, "qset": qset, "run_id": run_id}}
 
     # ---------------- ops
     ok = [d for d in decs if not d["error_kind"]]
@@ -348,7 +351,14 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
     }
 
     # ---------------- trading (testnet, actual fills, fees and slippage)
-    trades = db.query("SELECT * FROM trades WHERE status='closed'" + (" AND symbol=?" if symbol else "") + " ORDER BY closed_ts", [symbol] if symbol else [])
+    tw, tp = ["status='closed'"], []
+    if symbol:
+        tw.append("symbol=?")
+        tp.append(symbol)
+    if run_id:
+        tw.append("run_id=?")
+        tp.append(run_id)
+    trades = db.query("SELECT * FROM trades WHERE " + " AND ".join(tw) + " ORDER BY closed_ts", tp)
     tb: dict[str, Any] = {"closed": len(trades)}
     if trades:
         pnl = [t["realized_pnl"] or 0 for t in trades]
@@ -373,7 +383,8 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
             "by_symbol": {s: round(sum(t["realized_pnl"] or 0 for t in trades if t["symbol"] == s), 2) for s in sorted({t["symbol"] for t in trades})},
             "execution": execution_quality(trades),
         })
-    attempts = db.query("SELECT status, COUNT(*) n FROM trades" + (" WHERE symbol=?" if symbol else "") + " GROUP BY status", [symbol] if symbol else [])
+    aw = [w for w in tw if w != "status='closed'"]
+    attempts = db.query("SELECT status, COUNT(*) n FROM trades" + (" WHERE " + " AND ".join(aw) if aw else "") + " GROUP BY status", tp)
     tb["attempts_by_status"] = {r["status"]: r["n"] for r in attempts}
     out["trading"] = tb
     out["news"] = news_metrics(db)

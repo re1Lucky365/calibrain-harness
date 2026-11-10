@@ -547,9 +547,13 @@ def make_app(engine: Engine) -> web.Application:
         app.router.add_get("/legacy", legacy)
         app.router.add_static("/_next", NEXT_OUT / "_next")
 
-        async def favicon(_: web.Request) -> web.FileResponse:
-            return web.FileResponse(NEXT_OUT / "favicon.ico")
-        app.router.add_get("/favicon.ico", favicon)
+        async def root_asset(req: web.Request) -> web.StreamResponse:
+            """Icons and small files the export writes at its root (favicon.ico, icon.svg, ...)."""
+            f = NEXT_OUT / req.match_info["name"]
+            if f.parent != NEXT_OUT or not f.is_file():
+                raise web.HTTPNotFound()
+            return web.FileResponse(f)
+        app.router.add_get(r"/{name:[A-Za-z0-9_.-]+\.(?:ico|svg|png|webmanifest|txt)}", root_asset)
     app.router.add_static("/static", WEB)
 
     async def on_startup(_: web.Application) -> None:
@@ -569,7 +573,7 @@ def main() -> None:
     if os.environ.pop("CTB_RESUME_TRADING", None) == "1":
         s.trading_enabled = True  # restart requested by the symbol picker while auto-trade was on
     engine = Engine(s)
-    print(f"classifier-trading-bot dashboard: http://{s.host}:{s.port}  (venue: Bybit TESTNET, "
+    print(f"Calibrain terminal: http://{s.host}:{s.port}  (venue: Bybit TESTNET, "
           f"kairos key {'set' if s.kairos_api_key else 'NOT set'}, trading {'ON' if s.trading_enabled else 'observe-only'})")
     web.run_app(make_app(engine), host=s.host, port=s.port, print=None)
 

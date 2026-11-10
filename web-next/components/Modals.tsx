@@ -1,0 +1,179 @@
+"use client";
+import { useEffect, useRef, useState } from "react";
+import { api, post } from "@/lib/api";
+import { loadOverview, selectTf } from "@/lib/data";
+import { setState, useStore } from "@/lib/store";
+import { age, dt, fx, hrs } from "@/lib/format";
+
+function Dialog({ className, children }: { className?: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current!;
+    d.showModal();
+    const onClose = () => setState({ modal: null });
+    d.addEventListener("close", onClose);
+    return () => d.removeEventListener("close", onClose);
+  }, []);
+  return (
+    <dialog ref={ref} className={className} onClick={(e) => e.target === ref.current && ref.current?.close()}>
+      <form method="dialog"><button className="kbtn close" aria-label="Close">ESC ✕</button></form>
+      {children}
+    </dialog>
+  );
+}
+
+const J = ({ x }: { x: unknown }) => <pre className="code">{JSON.stringify(x, null, 1) ?? "—"}</pre>;
+
+export function Modals() {
+  const modal = useStore((s) => s.modal);
+  if (!modal) return null;
+  if (modal.kind === "decision") return <DecisionModal d={modal.data} />;
+  if (modal.kind === "state") return <StateModal data={modal.data} />;
+  if (modal.kind === "keys") return <KeysModal />;
+  if (modal.kind === "help") return <HelpModal />;
+  if (modal.kind === "tf") return <TfModal tf={modal.data} />;
+  return null;
+}
+
+function DecisionModal({ d }: { d: any }) {
+  return (
+    <Dialog>
+      <div className="ph"><span className="code">DEC</span>Decision #{d.id} · {d.symbol} · {dt(d.ts)}</div>
+      <p>question set {d.qset_version} · {fx(d.latency_ms, 0)} ms · {d.request_bytes ?? "—"} bytes · attempts {d.attempts ?? "—"} · request_id {d.request_id || "—"}</p>
+      {d.issues_json?.length > 0 && <p className="dn">Contract issues: {d.issues_json.join("; ")}</p>}
+      <div className="mgrid">
+        <div><h3>State sent</h3><J x={d.state_json} /></div>
+        <div><h3>Raw answers</h3><J x={d.answers_json} /><h3>Usage · model metadata</h3><J x={{ usage: d.usage_json, meta: d.model_meta_json }} /></div>
+        <div><h3>Policy decision</h3><J x={d.decision_json} /><h3>Realised label</h3><J x={d.label_json || "pending"} /></div>
+        <div><h3>Questions</h3><J x={d.questions_json} />{d.probes?.length > 0 && <><h3>Probes</h3><J x={d.probes} /></>}</div>
+      </div>
+    </Dialog>
+  );
+}
+
+function StateModal({ data }: { data: any }) {
+  const p = data.preview, n = JSON.stringify(p.state).length;
+  return (
+    <Dialog>
+      <div className="ph"><span className="code">STATE</span>Exact state sent to Kairos · {data.symbol}</div>
+      <p>{n} chars ≈ {Math.round(n / 3.6)} tokens. Built {age(Date.now() / 1000 - p.ts)} ago.</p>
+      <div><J x={p.state} /></div>
+    </Dialog>
+  );
+}
+
+function HelpModal() {
+  const rows: [string, string][] = [
+    ["BTC · ETH · SOL …", "Load a symbol into chart, Kairos, book and stats"], ["ASK", "Ask Kairos now for the loaded symbol (1 request)"],
+    ["PRB", "Ask + repeat & mirror consistency probes (4 requests)"], ["1M 5M 15M 1H 4H", "Chart timeframe (view only)"],
+    ["POS 10", "Max open positions (1–50); new entries only"], ["TF 1M · TF 5M · TF 15M · TF 1H", "Trading timeframe: how often Kairos decides and trades"],
+    ["MON EVAL TRD NEWS LOG", "Switch screen (also F1–F5)"], ["KEYS · HELP", "API credentials · this list"], ["/", "Focus the command line from anywhere"],
+  ];
+  return (
+    <Dialog className="keys">
+      <div className="ph"><span className="code">HELP</span>Commands</div>
+      <table className="t" style={{ marginTop: 6 }}><tbody>{rows.map(([k, v]) => <tr key={k}><td className="amb">{k}</td><td className="wrap">{v}</td></tr>)}</tbody></table>
+    </Dialog>
+  );
+}
+
+function TfModal({ tf }: { tf: string }) {
+  const st = useStore((s) => s.ov?.settings);
+  if (!st) return null;
+  const cur = st.tf_profiles[st.decision_tf], nxt = st.tf_profiles[tf];
+  if (!nxt) return null;
+  if (tf === st.decision_tf) {
+    setTimeout(() => setState({ modal: null, cmdHint: `ALREADY TRADING ${nxt.label}` }), 0);
+    return null;
+  }
+  const budget = st.kairos_max_requests_per_hour, over = nxt.required_rph > budget;
+  const tok = (rph: number) => `~${Math.round((rph * 14800) / 1e5) / 10}M`;
+  const Row = ({ k, a, b }: { k: string; a: string; b: string }) => <><div className="h">{k}</div><div className="old">{a}</div><div className="new">{b}</div></>;
+  const go = async (raise: boolean) => {
+    try {
+      await post("/api/decision-tf", { tf, raise_budget: raise });
+      setState({ modal: null });
+      await loadOverview();
+      selectTf(tf);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+  return (
+    <Dialog className="keys">
+      <div className="ph"><span className="code">TF</span>Switch trading timeframe</div>
+      <div style={{ margin: "8px 10px" }}>
+        <div className="tfgrid">
+          <Row k="" a={"NOW · " + cur.label} b={"NEW · " + nxt.label} />
+          <Row k="Kairos asked" a={`every ${cur.label} close`} b={`every ${nxt.label} close`} />
+          <Row k="Max hold / time-stop" a={hrs(cur.horizon_minutes)} b={hrs(nxt.horizon_minutes)} />
+          <Row k="Stop sized from" a={`${cur.atr_tf}m ATR × ${st.sl_atr} (≥ ${st.min_sl_bp}bp)`} b={`${nxt.atr_tf}m ATR × ${st.sl_atr} (≥ ${st.min_sl_bp}bp)`} />
+          <Row k="Kairos requests / hour" a={`~${cur.required_rph}`} b={`~${nxt.required_rph}`} />
+          <Row k="Input tokens / hour" a={tok(cur.required_rph)} b={tok(nxt.required_rph)} />
+        </div>
+        <p className="muted" style={{ margin: "8px 0 0" }}>Takes effect at the next {nxt.label} bar close. Open positions keep their original time-stop. Every decision is stamped with its timeframe, so EVAL can compare them separately. Saved to .env.</p>
+        {over && <div className="warnbox"><b className="amb">BUDGET.</b> {nxt.label} needs ~{nxt.required_rph} requests/hour but the cap is {budget}. With the current cap, about {Math.round(100 * (1 - budget / nxt.required_rph))}% of bars would be skipped.</div>}
+        {tf === "1" && <div className="warnbox"><b className="amb">1M NOTE.</b> Kairos answers in ~7–13 s, so 1m entries land ~10 s into the next bar, and the 40bp stop floor means fees are ~0.37R per trade.</div>}
+      </div>
+      <div className="keyactions" style={{ margin: "8px 10px" }}>
+        {over ? <><button className="kbtn amber" onClick={() => go(true)}>SWITCH + RAISE CAP TO {nxt.required_rph}/H</button><button className="kbtn" onClick={() => go(false)}>SWITCH, KEEP CAP {budget}</button></>
+          : <button className="kbtn amber" onClick={() => go(false)}>SWITCH TO {nxt.label}</button>}
+        <button className="kbtn" onClick={() => setState({ modal: null })}>CANCEL</button>
+      </div>
+    </Dialog>
+  );
+}
+
+type Msg = { ok: boolean; text: string } | null;
+function KeysModal() {
+  const [k, setK] = useState<any>(null);
+  const [kMsg, setKMsg] = useState<Msg>(null);
+  const [bMsg, setBMsg] = useState<Msg>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const kairosKey = useRef<HTMLInputElement>(null), kairosUrl = useRef<HTMLInputElement>(null);
+  const bybitKey = useRef<HTMLInputElement>(null), bybitSecret = useRef<HTMLInputElement>(null);
+  const load = () => api("/api/keys").then((x) => { setK(x); if (x.bybit.error) setBMsg({ ok: false, text: x.bybit.error }); });
+  useEffect(() => { load().catch(() => {}); }, []);
+  const run = async (id: string, fn: () => Promise<void>) => { setBusy(id); try { await fn(); } finally { setBusy(null); } };
+  const kairosResult = (r: any) => setKMsg(r.ok ? { ok: true, text: `Kairos reachable · ${r.latency_ms} ms · model ${r.model || "DMIND/Kairos"}` } : { ok: false, text: r.error });
+  const Stat = ({ ok, txt }: { ok: boolean; txt: string }) => <span className={ok ? "up" : "dn"}>● {txt}</span>;
+  return (
+    <Dialog className="keys">
+      <div className="ph"><span className="code">KEYS</span>API credentials</div>
+      <p>Saved to <code>.env</code> in the project folder (gitignored, owner-only permissions), applied immediately. Keys are never sent back to the browser; only the last 4 characters are shown.</p>
+      <section className="keybox">
+        <div className="keyhead"><b>KAIROS · MINARA CLOUD</b>{k && (k.kairos.set ? <Stat ok txt={`SET ${k.kairos.hint}`} /> : <Stat ok={false} txt="NOT SET" />)}</div>
+        <p>Create a key at <a href="https://minara.cloud" target="_blank" rel="noopener noreferrer">minara.cloud</a> in a <b>Kairos-enabled group</b>.</p>
+        <label>API KEY<input ref={kairosKey} type="password" autoComplete="off" spellCheck={false} placeholder="paste Kairos API key" /></label>
+        <label>BASE URL (OPTIONAL)<input ref={kairosUrl} type="text" autoComplete="off" spellCheck={false} placeholder={k?.kairos.base_url || "https://minara.cloud"} /></label>
+        <div className="keyactions">
+          <button className="kbtn amber" type="button" disabled={!!busy} onClick={() => run("ks", async () => {
+            const key = kairosKey.current!.value.trim();
+            if (!key) return setKMsg({ ok: false, text: "Paste a key first" });
+            try { kairosResult(await post("/api/keys/kairos", { api_key: key, base_url: kairosUrl.current!.value.trim() || null })); kairosKey.current!.value = ""; } catch (e: any) { setKMsg({ ok: false, text: e.message }); }
+            load(); loadOverview();
+          })}>{busy === "ks" ? "WORKING…" : "SAVE & TEST"}</button>
+          <button className="kbtn" type="button" disabled={!!busy} onClick={() => run("kt", async () => { try { kairosResult(await post("/api/keys/kairos/test")); } catch (e: any) { setKMsg({ ok: false, text: e.message }); } })}>{busy === "kt" ? "WORKING…" : "TEST CURRENT KEY"}</button>
+          <span className="muted">A test uses 1 request from the hourly budget.</span>
+        </div>
+        <div className={`keymsg ${kMsg ? (kMsg.ok ? "ok" : "bad") : ""}`}>{kMsg?.text}</div>
+      </section>
+      <section className="keybox">
+        <div className="keyhead"><b>BYBIT · TESTNET</b>{k && (k.bybit.api_key.set ? <Stat ok={k.bybit.connected} txt={`KEY ${k.bybit.api_key.hint} · ${k.bybit.connected ? "CONNECTED" : "ERROR"}`} /> : <Stat ok={false} txt="NOT SET" />)}</div>
+        <p>Create at <a href="https://testnet.bybit.com/app/user/api-management" target="_blank" rel="noopener noreferrer">testnet.bybit.com → API management</a>. Permissions: <b>Contract → Orders + Positions</b>. Leave <b>withdrawals off</b>. Mainnet keys are rejected.</p>
+        <label>API KEY<input ref={bybitKey} type="password" autoComplete="off" spellCheck={false} placeholder="testnet API key" /></label>
+        <label>API SECRET<input ref={bybitSecret} type="password" autoComplete="off" spellCheck={false} placeholder="testnet API secret" /></label>
+        <div className="keyactions">
+          <button className="kbtn amber" type="button" disabled={!!busy} onClick={() => run("bs", async () => {
+            const key = bybitKey.current!.value.trim(), secret = bybitSecret.current!.value.trim();
+            if (!key || !secret) return setBMsg({ ok: false, text: "Both key and secret are required" });
+            try { const r = await post("/api/keys/bybit", { api_key: key, api_secret: secret }); bybitKey.current!.value = bybitSecret.current!.value = ""; setBMsg({ ok: true, text: `Saved · testnet equity ${fx(r.equity)} USDT` }); } catch (e: any) { setBMsg({ ok: false, text: e.message }); }
+            load(); loadOverview();
+          })}>{busy === "bs" ? "WORKING…" : "VERIFY & SAVE"}</button>
+          <span className="muted">Checked against your testnet wallet before saving. Auto-trade switches off.</span>
+        </div>
+        <div className={`keymsg ${bMsg ? (bMsg.ok ? "ok" : "bad") : ""}`}>{bMsg?.text}</div>
+      </section>
+    </Dialog>
+  );
+}

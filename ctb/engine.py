@@ -50,7 +50,7 @@ class Engine:
         self.started_at = time.time()
         self.tasks: list[asyncio.Task] = []
         self.last_decision_error: str | None = None
-        self.calibrator = Calibrator(self.db)
+        self.calibrator = Calibrator(self.db, tf_fn=lambda: self.s.decision_tf)
         self.kairos_sem = asyncio.Semaphore(max(1, s.kairos_concurrency))
 
     # ------------------------------------------------------------------ pub/sub

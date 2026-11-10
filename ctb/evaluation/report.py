@@ -69,6 +69,16 @@ def observations(m: dict[str, Any]) -> list[str]:
                    "A large error means a directional bias that is independent of the evidence.")
     if cons.get("both_targets_above_50pct"):
         obs.append(f"Self-contradiction: in {cons['both_targets_above_50pct']} decisions the model gave >50% to BOTH the long target and the short target being hit first.")
+    for q, r in (m.get("vs_base_rates") or {}).items():
+        if r.get("n", 0) >= 30:
+            obs.append(f"{q} vs the base rates Kairos was given (n={r['n']}): Brier Kairos {r['brier_kairos']}, base rates {r['brier_base_rates']}, "
+                       f"skill {r['kairos_skill_vs_base']:+.3f}; best blend weight on Kairos {r['best_w']}. "
+                       + ("Kairos adds information beyond the base rates." if (r.get("kairos_skill_vs_base") or 0) > 0 else
+                          "Kairos does not beat the base rates it was shown."))
+    for q in ("direction", "big_move"):
+        b = (m.get("model_quality") or {}).get(q) or {}
+        if b.get("n", 0) >= 30:
+            obs.append(f"{b['name']}: Brier skill vs climatology {_f(b.get('skill_vs_climatology'))}, AUC {_f(b.get('auc'))}, n={b['n']}.")
     tr = m.get("trading", {})
     if tr.get("closed"):
         obs.append(f"Testnet trading (from Bybit's own closed-P&L records): {tr['closed']} closed, net {tr['net_pnl_usdt']:+.2f} USDT "

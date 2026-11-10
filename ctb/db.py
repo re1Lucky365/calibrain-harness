@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS news (
   labeled_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  started_ts REAL,
+  ended_ts REAL,
+  notes TEXT,
+  config_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL,
@@ -131,7 +140,7 @@ TRADE_COLUMNS = {
 }
 
 JSON_COLS = {"state_json", "questions_json", "answers_json", "parsed_json", "issues_json", "usage_json",
-             "model_meta_json", "decision_json", "label_json", "probs_json", "fills_json"}
+             "model_meta_json", "decision_json", "label_json", "probs_json", "fills_json", "config_json"}
 
 
 class DB:
@@ -147,7 +156,11 @@ class DB:
 
     def _migrate(self) -> None:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(decisions)")}
+        if "run_id" not in cols:
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN run_id INTEGER")
         tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(trades)")}
+        if "run_id" not in tcols:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN run_id INTEGER")
         for col, typ in TRADE_COLUMNS.items():
             if col not in tcols:
                 self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")

@@ -189,3 +189,18 @@ accepted (max 30). The Kairos budget is checked for the new count (raise it expl
 a symbol with an open bot trade cannot be removed, and the choice is saved to `.env` (`CTB_SYMBOLS`).
 The service then restarts itself (~15 s) and resumes auto-trade if it was on. Public market data
 uses one WebSocket per 8 symbols; at most `CTB_KAIROS_CONCURRENCY` (6) Kairos requests run at once.
+
+## Test runs
+
+Every Kairos decision and testnet trade is stamped with the run that was active, so each test is
+read on its own and next to the overall total (TRADES -> RUNS; EVAL -> run filter; status line).
+
+| Run | Period (UTC, 10 Nov 2026) | Setup |
+|---|---|---|
+| 1 | 09:00 - 13:55 | v1 questions, EXPLORE, market entries, mark-price market TP/SL, 5 symbols |
+| 2 | 13:55 - 14:33 | v1 questions, EXPLORE, IOC-capped entries, exact fill booking, managed exits from 14:12 |
+| 3 | 14:34 - | v2 questions, calibrated strict policy (EXPLORE off), BTC ETH HYPE XRP SOXL SOL XAU |
+
+A run stays open across restarts. A new run starts with `POST /api/runs/start` once no bot trade is
+open (so P&L never straddles two runs); its configuration is snapshotted with it. Runs 1 and 2 were
+defined from timestamps with `scripts/define_runs.py`.

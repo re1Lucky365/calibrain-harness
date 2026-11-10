@@ -267,3 +267,24 @@ dialog.keys { width: min(640px, 95vw); }
 .unibar { display: flex; gap: 10px; align-items: center; margin: 6px 10px; flex-wrap: wrap; }
 .unibar input[type="text"] { background: #000; color: var(--text); border: 1px solid var(--line); font: 12px var(--mono); padding: 3px 6px; width: 200px; text-transform: uppercase; }
 .restarting { position: fixed; inset: 0; background: rgba(0, 0, 0, .8); z-index: 60; display: flex; align-items: center; justify-content: center; color: var(--amber); font: 600 16px var(--cond); letter-spacing: .08em; }
+
+/* ---------- key/value columns: real gutters, no overflow into the next column */
+.kvcols > div { min-width: 0; }
+.kv { grid-template-columns: minmax(0, auto) minmax(0, 1fr); }
+.kv > .k { padding: 3px 8px 3px 10px; }
+.kv > .v { padding: 3px 10px 3px 12px; text-overflow: ellipsis; }
+.kvcols .colh { padding: 4px 10px; }
+
+/* ---------- order book */
+.ladder .depth { display: block; width: 100%; height: 64px; background: #020202; border-bottom: 1px solid var(--line-2); }
+.ladder .depth .dl { fill: var(--muted); font: 9px var(--mono); }
+.ladder .imb { display: flex; align-items: center; gap: 8px; padding: 4px 10px; font-size: 11px; border-bottom: 1px solid var(--line); }
+.ladder .imb-bar { flex: 1; height: 5px; background: var(--down); opacity: .8; position: relative; }
+.ladder .imb-bar span { position: absolute; inset: 0 auto 0 0; background: var(--up); }
+.ladder .t td { padding: 1px 10px; }
+.ladder .t th { padding: 3px 10px; }
+.ladder td.lvl { position: relative; }
+.ladder .bar { left: auto; right: 0; opacity: .28; }
+.ladder .wall { color: var(--amber); font-size: 9px; font-weight: 600; margin-right: 6px; letter-spacing: .04em; }
+.pb.tight > .t td:first-child, .pb.tight > .t th:first-child { padding-left: 10px; }
+.pb.tight > .t td:last-child, .pb.tight > .t th:last-child { padding-right: 10px; }

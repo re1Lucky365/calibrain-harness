@@ -115,6 +115,13 @@ class BybitTestnet:
         res = await self._request("GET", "/v5/market/tickers", {"category": "linear", "symbol": symbol})
         return res["list"][0]
 
+    async def orderbook(self, symbol: str, depth: int = 50) -> dict[str, list[tuple[float, float]]]:
+        """Testnet book, best first: {"bids": [(price, size), ...], "asks": [...]}. Sizing and the
+        entry price cap are computed from this, because testnet depth is far thinner than mainnet."""
+        res = await self._request("GET", "/v5/market/orderbook", {"category": "linear", "symbol": symbol, "limit": depth})
+        return {"bids": [(float(p), float(q)) for p, q in res.get("b", [])],
+                "asks": [(float(p), float(q)) for p, q in res.get("a", [])]}
+
     # ------------------------------------------------------------------ account
     async def wallet(self) -> dict[str, Any]:
         res = await self._request("GET", "/v5/account/wallet-balance", {"accountType": "UNIFIED"})
@@ -148,17 +155,22 @@ class BybitTestnet:
         res = await self._request("GET", "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"})
         return res.get("list", [])
 
-    async def closed_pnl(self, limit: int = 100, start_ms: int | None = None) -> list[dict[str, Any]]:
-        res = await self._request("GET", "/v5/position/closed-pnl", {"category": "linear", "limit": limit, "startTime": start_ms})
+    async def closed_pnl(self, limit: int = 100, start_ms: int | None = None, symbol: str | None = None) -> list[dict[str, Any]]:
+        """One row per closing order. A single exit that sweeps several book levels can post
+        several rows; callers must aggregate them (see Executor._record_close)."""
+        params = {"category": "linear", "limit": limit, "startTime": start_ms, "symbol": symbol}
+        res = await self._request("GET", "/v5/position/closed-pnl", params)
         return res.get("list", [])
 
-    async def executions(self, symbol: str | None = None, limit: int = 100, start_ms: int | None = None) -> list[dict[str, Any]]:
-        params = {"category": "linear", "limit": limit, "symbol": symbol, "startTime": start_ms}
+    async def executions(self, symbol: str | None = None, limit: int = 100, start_ms: int | None = None,
+                         order_id: str | None = None) -> list[dict[str, Any]]:
+        params = {"category": "linear", "limit": limit, "symbol": symbol, "startTime": start_ms, "orderId": order_id}
         res = await self._request("GET", "/v5/execution/list", params)
         return res.get("list", [])
 
-    async def order_history(self, symbol: str, order_link_id: str) -> dict[str, Any] | None:
-        res = await self._request("GET", "/v5/order/history", {"category": "linear", "symbol": symbol, "orderLinkId": order_link_id})
+    async def order_history(self, symbol: str, order_link_id: str | None = None, order_id: str | None = None) -> dict[str, Any] | None:
+        params = {"category": "linear", "symbol": symbol, "orderLinkId": order_link_id, "orderId": order_id}
+        res = await self._request("GET", "/v5/order/history", params)
         lst = res.get("list", [])
         return lst[0] if lst else None
 
@@ -176,27 +188,34 @@ class BybitTestnet:
     async def market_order(
         self, symbol: str, side: str, qty: str, *, link_id: str,
         take_profit: str | None = None, stop_loss: str | None = None, reduce_only: bool = False,
+        limit_price: str | None = None, trigger_by: str = "LastPrice",
     ) -> dict[str, Any]:
+        """IOC order. With limit_price it is a marketable limit: it takes whatever liquidity exists
+        up to that price and cancels the rest, so it can never sweep a thin book."""
         params: dict[str, Any] = {
             "category": "linear", "symbol": symbol, "side": "Buy" if side == "buy" else "Sell",
-            "orderType": "Market", "qty": qty, "positionIdx": 0, "orderLinkId": link_id,
+            "orderType": "Limit" if limit_price else "Market", "qty": qty, "positionIdx": 0, "orderLinkId": link_id,
             "reduceOnly": reduce_only, "timeInForce": "IOC",
         }
+        if limit_price:
+            params["price"] = limit_price
         if take_profit or stop_loss:
-            # Position-level (Full) TP/SL, triggered on mark price so a testnet wick
-            # on thin liquidity does not stop us out on a print nobody could trade.
-            params.update({"tpslMode": "Full", "tpTriggerBy": "MarkPrice", "slTriggerBy": "MarkPrice"})
+            # Position-level (Full) TP/SL. On testnet the mark price follows the mainnet index while
+            # the testnet book can trade 100+ bp away from it, so a mark-triggered exit fires at a
+            # level the book is nowhere near and then fills far off. LastPrice triggers where we can trade.
+            params.update({"tpslMode": "Full", "tpTriggerBy": trigger_by, "slTriggerBy": trigger_by})
             if take_profit:
                 params["takeProfit"] = take_profit
             if stop_loss:
                 params["stopLoss"] = stop_loss
         return await self._request("POST", "/v5/order/create", params)
 
-    async def set_trading_stop(self, symbol: str, *, take_profit: str | None, stop_loss: str | None) -> None:
+    async def set_trading_stop(self, symbol: str, *, take_profit: str | None, stop_loss: str | None,
+                               trigger_by: str = "LastPrice") -> None:
         await self._request("POST", "/v5/position/trading-stop", {
             "category": "linear", "symbol": symbol, "positionIdx": 0, "tpslMode": "Full",
             "takeProfit": take_profit, "stopLoss": stop_loss,
-            "tpTriggerBy": "MarkPrice", "slTriggerBy": "MarkPrice",
+            "tpTriggerBy": trigger_by, "slTriggerBy": trigger_by,
         })
 
     async def cancel_all(self, symbol: str | None = None) -> None:

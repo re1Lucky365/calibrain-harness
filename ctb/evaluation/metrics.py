@@ -136,6 +136,28 @@ def multiclass_block(name: str, rows: list[tuple[list[float], int]], n_opts: int
     }
 
 
+def _dist(xs: list[float]) -> dict[str, Any] | None:
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    q = lambda p: xs[min(len(xs) - 1, int(p * len(xs)))]  # noqa: E731
+    return {"n": len(xs), "mean": round(statistics.fmean(xs), 2), "p50": round(q(0.5), 2), "p90": round(q(0.9), 2), "max": round(xs[-1], 2)}
+
+
+def execution_quality(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """How far real testnet fills were from the prices the strategy assumed."""
+    filled = [t for t in trades if t.get("requested_qty")]
+    return {
+        "entry_slip_bp": _dist([t.get("entry_slip_bp") for t in trades]),
+        "stop_exit_slip_bp": _dist([t.get("exit_slip_bp") for t in trades if t.get("close_reason") == "stop_loss"]),
+        "target_exit_slip_bp": _dist([t.get("exit_slip_bp") for t in trades if t.get("close_reason") == "take_profit"]),
+        "entry_latency_ms": _dist([t.get("entry_latency_ms") for t in trades]),
+        "fill_ratio_mean": round(statistics.fmean(t["qty"] / t["requested_qty"] for t in filled), 4) if filled else None,
+        "multi_fill_exits": sum(1 for t in trades if (t.get("exit_fills") or 1) > 1),
+        "worst_r": round(min((t["r_mult"] for t in trades if t.get("r_mult") is not None), default=0), 3),
+    }
+
+
 def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None, decision_tf: str | None = None) -> dict[str, Any]:
     where, params = ["probe IS NULL"], []
     if decision_tf:
@@ -303,7 +325,7 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
     tb: dict[str, Any] = {"closed": len(trades)}
     if trades:
         pnl = [t["realized_pnl"] or 0 for t in trades]
-        rs = [(t["realized_pnl"] or 0) / t["risk_usd"] for t in trades if t.get("risk_usd")]
+        rs = [t["r_mult"] if t.get("r_mult") is not None else (t["realized_pnl"] or 0) / t["risk_usd"] for t in trades if t.get("r_mult") is not None or t.get("risk_usd")]
         wins = [x for x in pnl if x > 0]
         losses = [x for x in pnl if x <= 0]
         eq, peak, mdd = 0.0, 0.0, 0.0
@@ -319,10 +341,13 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
             "max_drawdown_usdt": round(mdd, 2),
             "by_reason": dict(Counter(t["close_reason"] for t in trades)),
             "by_mode": {m: {"n": len(v), "pnl": round(sum(v), 2), "win_rate": _r4(sum(1 for x in v if x > 0) / len(v))}
-                        for m in ("strict", "exploration") if (v := [t["realized_pnl"] or 0 for t in trades if (t.get("notes") or "strict") == m])},
+                        for m in ("strict", "exploration") if (v := [t["realized_pnl"] or 0 for t in trades if (t.get("mode") or t.get("notes") or "strict") == m])},
             "by_side": {s: {"n": len(v), "pnl": round(sum(v), 2)} for s in ("long", "short") if (v := [t["realized_pnl"] or 0 for t in trades if t["side"] == s])},
             "by_symbol": {s: round(sum(t["realized_pnl"] or 0 for t in trades if t["symbol"] == s), 2) for s in sorted({t["symbol"] for t in trades})},
+            "execution": execution_quality(trades),
         })
+    attempts = db.query("SELECT status, COUNT(*) n FROM trades" + (" WHERE symbol=?" if symbol else "") + " GROUP BY status", [symbol] if symbol else [])
+    tb["attempts_by_status"] = {r["status"]: r["n"] for r in attempts}
     out["trading"] = tb
     out["news"] = news_metrics(db)
     return out

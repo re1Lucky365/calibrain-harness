@@ -221,3 +221,52 @@ def test_tf_profiles_move_cadence_horizon_and_stop_together():
     assert s.horizon_bars * s.decision_tf_minutes == 720
     for tf, p in TF_PROFILES.items():  # the stop is always sized from a slower timeframe than decisions
         assert int(p["atr_tf"]) > int(tf)
+
+
+# ---------------------------------------------------------------- execution accuracy
+from ctb.broker.executor import adverse_bp, aggregate_close_rows, depth_within, reason_from_orders  # noqa: E402
+
+
+def _row(oid, size, exit_px, pnl, t, entry=0.06972729, of=0.0, cf=0.0):
+    return {"orderId": oid, "closedSize": str(size), "avgEntryPrice": str(entry), "avgExitPrice": str(exit_px),
+            "closedPnl": str(pnl), "openFee": str(of), "closeFee": str(cf), "createdTime": str(t), "updatedTime": str(t)}
+
+
+def test_close_rows_are_summed_not_last_only():
+    # The real DOGEUSDT exit of 10 Nov: one stop, three closed-P&L rows (Bybit export).
+    rows = [_row("a", 8031, 0.0663, -28.12534774, 3, of=0.30798892, cf=0.29285042),
+            _row("b", 51071, 0.06627118, -180.32648909, 1, of=1.9585732, cf=1.86149464),
+            _row("c", 13006, 0.06673122, -39.94290897, 2, of=0.49878016, cf=0.47734846)]
+    agg = aggregate_close_rows(rows, 72108)
+    assert agg["complete"]
+    assert abs(agg["pnl"] - (-248.39474580)) < 1e-6
+    assert abs(agg["open_fee"] + agg["close_fee"] - 5.39703580) < 1e-6
+    assert abs(agg["exit_price"] - 0.066358) < 1e-5
+    assert len(agg["rows"]) == 3
+
+
+def test_close_rows_incomplete_until_whole_size_posted():
+    agg = aggregate_close_rows([_row("a", 16.2, 1.1, -0.37891555, 1)], 3380.3)
+    assert agg and not agg["complete"]
+
+
+def test_adverse_slippage_sign():
+    assert adverse_bp("long", 100.10, 100.0, entry=True) == 10.0   # paid up
+    assert adverse_bp("short", 99.90, 100.0, entry=True) == 10.0   # sold lower
+    assert adverse_bp("long", 99.0, 100.0, entry=False) == 100.0   # stop filled below trigger
+    assert adverse_bp("short", 101.0, 100.0, entry=False) == 100.0
+    assert adverse_bp("long", 100.5, 100.0, entry=False) == -50.0  # better than trigger
+
+
+def test_depth_within_cap():
+    asks = [(100.0, 1.0), (100.05, 2.0), (100.2, 5.0)]
+    assert depth_within(asks, 100.1, buy=True) == 3.0
+    bids = [(99.9, 1.0), (99.8, 4.0)]
+    assert depth_within(bids, 99.85, buy=False) == 1.0
+
+
+def test_close_reason_from_order_create_type():
+    assert reason_from_orders([{"createType": "CreateByStopLoss"}]) == "stop_loss"
+    assert reason_from_orders([{"createType": "CreateByTakeProfit"}, {"createType": "CreateByTakeProfit"}]) == "take_profit"
+    assert reason_from_orders([{"createType": "CreateByUser"}]) == "external"
+    assert reason_from_orders([None]) is None

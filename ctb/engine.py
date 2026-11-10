@@ -15,6 +15,7 @@ import aiohttp
 from .broker.bybit_private_ws import BybitPrivateStream
 from .broker.bybit_rest import BybitTestnet
 from .broker.executor import Executor
+from . import runs as runs_mod
 from .calibration import Calibrator
 from .config import Settings, save_env
 from .db import DB
@@ -77,6 +78,7 @@ class Engine:
             self.budget.calls.append(r["ts"])
         for r in self.db.query("SELECT ts FROM news WHERE ts > ? ORDER BY ts", (hour_ago,)):
             self.news_budget.calls.append(r["ts"])
+        self.run = runs_mod.ensure(self.db, self.s)
         try:
             self.calibrator.refit()
         except Exception as exc:  # noqa: BLE001
@@ -111,6 +113,7 @@ class Engine:
             self._private_task.cancel()
         self._private_stream = BybitPrivateStream(self.s.bybit_api_key, self.s.bybit_api_secret, self.session, self.executor.on_private)
         self.executor.stream = self._private_stream
+        self.executor.run_id_fn = lambda: self.run["id"]
         self.executor.price_fn = lambda sym: self.store[sym].testnet_ticker
         self._private_task = asyncio.create_task(self._private_stream.run(), name="private_ws")
 
@@ -251,7 +254,7 @@ class Engine:
     async def _ask(self, symbol: str, state: dict, questions: dict, meta: dict, *, probe: str | None, probe_of: int | None = None) -> dict[str, Any]:
         row: dict[str, Any] = {
             "ts": time.time(), "symbol": symbol, "bar_time": meta.get("bar_time"), "qset_version": QUESTION_SET_VERSION,
-            "probe": probe, "probe_of": probe_of, "decision_tf": self.s.decision_tf,
+            "probe": probe, "probe_of": probe_of, "decision_tf": self.s.decision_tf, "run_id": self.run["id"],
             "state_json": state, "questions_json": questions, "price": meta["price"],
             "testnet_price": meta.get("testnet_price"), "sl_bp": meta["sl_bp"], "tp_bp": meta["tp_bp"], "horizon_min": meta["horizon_min"],
         }

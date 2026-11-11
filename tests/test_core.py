@@ -426,3 +426,106 @@ def test_calibration_is_fitted_per_trading_timeframe(tmp_path):
     assert cal.refit()["direction"] == 0.0  # fitted: ignore the useless model on 5m
     tf["v"] = "1"
     assert cal.maybe_refit()["direction"] == PRIOR_W  # 1m has no history of its own: prior, not 5m's weight
+
+
+# ---------------------------------------------------------------- multi-model (Kairos + Jev)
+def _jev_answers(questions):
+    """Answers shaped like TypeSafe's documented response (score probabilities keyed by level strings)."""
+    out = {}
+    for qid, q in questions.items():
+        if q["type"] == "noul":
+            out[qid] = {"type": "noul", "noul": 0.61}
+        elif q["type"] == "choice":
+            opts = list(q["criteria"])
+            p = {o: round(1 / len(opts), 6) for o in opts}
+            p[opts[0]] = round(1 - sum(v for k, v in p.items() if k != opts[0]), 6)
+            out[qid] = {"type": "choice", "choice": max(p, key=p.get), "confidence": 0.3, "probabilities": p}
+        else:
+            n = len(q["criteria"])
+            probs = {str(i): (1.0 if i == 1 else 0.0) for i in range(n)}
+            out[qid] = {"type": "score", "score": 1.0, "confidence": 0.5, "probabilities": probs,
+                        "legend": {str(i): c for i, c in enumerate(q["criteria"])}}
+    return out
+
+
+def test_jev_client_retries_overload_and_answers_validate(monkeypatch):
+    import asyncio
+    import json as _json
+    import aiohttp
+    from aiohttp import web as aweb
+    from ctb.kairos.client import SystemOneClient
+    from ctb.models import MODELS
+
+    seen = []
+
+    async def handler(req):
+        body = await req.json()
+        seen.append({"auth": req.headers.get("Authorization"), "body": body})
+        if len(seen) == 1:
+            return aweb.json_response({"detail": "overloaded"}, status=529)
+        return aweb.json_response({"model": "jev-1.14.0", "answers": _jev_answers(body["questions"]),
+                                   "usage": {"input_tokens": 1234, "output_tokens": 70}})
+
+    async def run():
+        app = aweb.Application()
+        app.router.add_post("/v1/systemone", handler)
+        runner = aweb.AppRunner(app)
+        await runner.setup()
+        site = aweb.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        monkeypatch.setenv("TYPESAFE_API_KEY", "ts-test-key-123456")
+        async with aiohttp.ClientSession() as session:
+            client = SystemOneClient(MODELS["jev"], session, base_url=f"http://127.0.0.1:{port}")
+            qs = {**Q, "extra_1": {"type": "noul", "instructions": "x"}, "extra_2": {"type": "noul", "instructions": "y"}}
+            res = await client.ask({"last_price": 1}, qs)  # 9 questions: fine for Jev (no 8-question cap)
+            parsed, issues = validate(res.answers, Q | {"extra_1": qs["extra_1"], "extra_2": qs["extra_2"]})
+        await runner.cleanup()
+        return res, parsed, issues
+
+    import asyncio as _a
+    from unittest import mock
+    with mock.patch("asyncio.sleep", new=lambda *_a, **_k: _noop()):
+        res, parsed, issues = asyncio.run(run())
+    assert res.attempts == 2  # 529 retried once
+    assert seen[1]["auth"] == "Bearer ts-test-key-123456"
+    assert seen[1]["body"]["model"] == "jev-1.14.0" and "task_profile" not in seen[1]["body"]
+    assert issues == [] and parsed["setup_quality"]["score"] == 1.0 and parsed["direction"]["p"] == 0.61
+    assert res.usage["input_tokens"] == 1234 and res.metadata["model"] == "jev-1.14.0"
+
+
+async def _noop():
+    return None
+
+
+def test_kairos_keeps_its_question_cap_and_news_profile_is_kairos_only():
+    import asyncio
+    import aiohttp
+    from ctb.kairos.client import KairosError, SystemOneClient
+    from ctb.models import MODELS
+
+    async def run():
+        async with aiohttp.ClientSession() as session:
+            k = SystemOneClient(MODELS["kairos"], session, api_key_getter=lambda: "k")
+            with pytest.raises(KairosError, match="1-8 questions"):
+                await k.ask({}, {f"q{i}": {"type": "noul", "instructions": "x"} for i in range(9)})
+            j = SystemOneClient(MODELS["jev"], session, api_key_getter=lambda: "k")
+            with pytest.raises(KairosError, match="task_profile"):
+                await j.ask({}, {"q": {"type": "noul", "instructions": "x"}}, task_profile="news_return")
+    asyncio.run(run())
+
+
+def test_calibration_is_fitted_per_model(tmp_path):
+    from ctb.calibration import MIN_FIT, PRIOR_W, Calibrator
+    from ctb.db import DB
+    db = DB(tmp_path / "t.db")
+    for i in range(MIN_FIT + 20):
+        db.insert("decisions", {"ts": i, "symbol": "BTCUSDT", "qset_version": "perp-v2.0", "decision_tf": "5", "sl_bp": 50,
+                                "model_provider": "kairos", "parsed_json": {"direction": {"p": 0.9}},
+                                "decision_json": {"meta": {"base_rates": BASE}},
+                                "label_json": {"return_pct": 0.1 if i % 2 else -0.1, "max_up_pct": 0, "max_down_pct": 0}})
+    prov = {"v": "kairos"}
+    cal = Calibrator(db, tf_fn=lambda: "5", provider_fn=lambda: prov["v"])
+    assert cal.refit()["direction"] == 0.0
+    prov["v"] = "jev"
+    assert cal.maybe_refit()["direction"] == PRIOR_W  # Jev starts from the prior, never from Kairos's weights

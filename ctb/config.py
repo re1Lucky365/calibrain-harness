@@ -1,6 +1,6 @@
 """Runtime configuration. Everything is read from the environment (optionally a local .env).
 
-Secrets (KAIROS_API_KEY, BYBIT_API_KEY, BYBIT_API_SECRET) are only ever read here and passed
+Secrets (KAIROS_API_KEY, TYPESAFE_API_KEY, BYBIT_API_KEY, BYBIT_API_SECRET) are only ever read here and passed
 to the clients that need them. They are never logged, stored in SQLite, or sent to the browser.
 """
 
@@ -103,6 +103,8 @@ class Settings:
     atr_tf: str = os.environ.get("CTB_ATR_TF", "15")  # timeframe whose ATR sizes the bracket
 
     # --- kairos ---
+    # which classification model makes the decisions: "kairos" or "jev" (see ctb/models.py)
+    model_provider: str = os.environ.get("CTB_MODEL_PROVIDER", "kairos").strip().lower()
     kairos_base_url: str = os.environ.get("KAIROS_BASE_URL", "https://minara.cloud").rstrip("/")
     kairos_model: str = "DMIND/Kairos"
     kairos_timeout_s: float = _f("CTB_KAIROS_TIMEOUT_S", 120)
@@ -169,6 +171,11 @@ class Settings:
         return os.environ.get("KAIROS_API_KEY", "").strip()
 
     @property
+    def model_spec(self):
+        from .models import get
+        return get(self.model_provider)
+
+    @property
     def round_trip_cost_bp(self) -> float:
         return 2 * (self.taker_fee_bp + self.slippage_bp)
 
@@ -223,6 +230,11 @@ class Settings:
             "min_direction_margin": self.min_direction_margin,
             "max_notional_usdt": self.max_notional_usdt,
             "daily_loss_limit_pct": self.daily_loss_limit_pct,
+            "model_provider": self.model_provider,
+            "model_label": self.model_spec.label,
+            "model_id": self.model_spec.model,
+            "models": {p: {"label": m.label, "vendor": m.vendor, "model_id": m.model, "configured": bool(m.api_key),
+                           "news_return": m.supports_news_return} for p, m in _models().items()},
             "kairos_base_url": self.kairos_base_url,
             "kairos_model": self.kairos_model,
             "kairos_key_configured": bool(self.kairos_api_key),
@@ -230,6 +242,11 @@ class Settings:
             "bybit_keys_configured": bool(self.bybit_api_key and self.bybit_api_secret),
             "venue": "bybit-testnet",
         }
+
+
+def _models():
+    from .models import MODELS
+    return MODELS
 
 
 def load_settings() -> Settings:

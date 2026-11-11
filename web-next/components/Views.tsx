@@ -61,7 +61,8 @@ const dist = (d: any, unit = "bp") => (d ? `${sg(d.mean, 1)}${unit} mean · p90 
 
 export function EvalView() {
   const st = useStore((s) => s.ov?.settings);
-  const [f, setF] = useState({ symbol: "", tf: "", hours: "", qset: "", run: "" });
+  const [f, setF] = useState({ symbol: "", tf: "", hours: "", qset: "", run: "", model: "" });
+  const models = useStore((s) => s.ov?.settings.models) || {};
   const runsData = useRuns(0);
   const [m, setM] = useState<any>(null);
   const load = useCallback(async () => {
@@ -71,21 +72,23 @@ export function EvalView() {
     if (f.hours) q.set("hours", f.hours);
     if (f.qset) q.set("qset", f.qset);
     if (f.run) q.set("run", f.run);
+    if (f.model) q.set("model", f.model);
     setM(await api("/api/metrics?" + q));
   }, [f]);
   useEffect(() => { load().catch(() => {}); }, [load]);
   const report = async () => {
-    const md = await api<string>("/api/report");
+    const md = await api<string>("/api/report" + (f.model ? `?model=${f.model}` : ""));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
-    a.download = `kairos-report-${new Date().toISOString().slice(0, 16)}.md`;
+    a.download = `model-report-${f.model || "all"}-${new Date().toISOString().slice(0, 16)}.md`;
     a.click();
   };
   const toolbar = (
     <div className="toolbar">
-      <span className="code">EVAL</span><b>Kairos model evaluation</b>
+      <span className="code">EVAL</span><b>Model evaluation</b>
       <select value={f.symbol} onChange={(e) => setF({ ...f, symbol: e.target.value })}><option value="">ALL SYMBOLS</option>{st?.symbols.map((s: string) => <option key={s} value={s}>{s}</option>)}</select>
       <select value={f.tf} onChange={(e) => setF({ ...f, tf: e.target.value })}><option value="">ALL TRADE TFs</option>{st && Object.entries<any>(st.tf_profiles).map(([tf, p]) => <option key={tf} value={tf}>TRADE TF {p.label}</option>)}</select>
+      <select value={f.model} onChange={(e) => setF({ ...f, model: e.target.value })}><option value="">ALL MODELS</option>{Object.entries<any>(models).map(([p, m]) => <option key={p} value={p}>{m.label.toUpperCase()}</option>)}</select>
       <select value={f.run} onChange={(e) => setF({ ...f, run: e.target.value })}><option value="">ALL RUNS</option>{runsData?.runs.map((r: any) => <option key={r.id} value={String(r.id)}>RUN {r.id}{r.current ? " (LIVE)" : ""}</option>)}</select>
       <select value={f.qset} onChange={(e) => setF({ ...f, qset: e.target.value })} data-tip="Question set: v2 adds base-rate anchoring, direction and big_move"><option value="perp-v2">QUESTIONS v2</option><option value="perp-v1">QUESTIONS v1</option><option value="">ALL QUESTION SETS</option></select>
       <select value={f.hours} onChange={(e) => setF({ ...f, hours: e.target.value })}><option value="">ALL TIME</option><option value="24">LAST 24H</option><option value="6">LAST 6H</option><option value="4">LAST 4H</option></select>
@@ -97,7 +100,7 @@ export function EvalView() {
   const mq = m.model_quality, ops = m.ops, edge = m.edge, cons = m.consistency, t = m.trading, ex = t.execution || {};
   const pct = (x: any) => (isNum(x) ? (100 * Number(x)).toFixed(0) + "%" : "—");
   const cells: [string, React.ReactNode, string][] = [
-    ["Kairos requests", ops.requests, `${ops.ok} ok · err ${fx(100 * (ops.error_rate || 0), 1)}%`], ["Labelled", m.labelled, "scored against reality"],
+    ["Model requests", ops.requests, `${ops.ok} ok · err ${fx(100 * (ops.error_rate || 0), 1)}%`], ["Labelled", m.labelled, "scored against reality"],
     ["Latency p50", isNum(ops.latency_ms_p50) ? fx(ops.latency_ms_p50, 0) + " ms" : "—", `p90 ${isNum(ops.latency_ms_p90) ? fx(ops.latency_ms_p90, 0) : "—"} ms`],
     ["Brier skill long", sg(mq.long_bracket?.skill_vs_climatology, 3), "> 0 beats base rates"], ["Brier skill short", sg(mq.short_bracket?.skill_vs_climatology, 3), "> 0 beats base rates"],
     ["AUC target first", `${fx(mq.long_bracket?.auc_target_first, 2)} / ${fx(mq.short_bracket?.auc_target_first, 2)}`, "long / short · 0.50 = random"],
@@ -133,10 +136,10 @@ export function EvalView() {
               {mr && <tr><td className="amb">mean_reversion</td><td className="r">{mr.n}</td><td className="r">{fx(mr.brier, 4)}</td><td className="r">{fx(mr.brier_climatology, 4)}</td><td className="r">—</td><td className={`r ${ud(mr.skill_vs_climatology)}`}>{sg(mr.skill_vs_climatology, 3)}</td><td className="r">AUC {fx(mr.auc, 3)}</td></tr>}</tbody></table>
           <div className="muted" style={{ padding: "4px 8px" }}>Multiclass Brier, or RPS for ordered bins. Lower is better. Skill = 1 − score / climatology.</div>
         </Panel>
-        <Panel code="BASE" title="Kairos vs the base rates it was given · calibration weights" tight>
+        <Panel code="BASE" title="Model vs the base rates it was given · calibration weights" tight>
           {Object.keys(vb).length ? (
             <table className="t">
-              <thead><tr><th>Question</th><th className="r">n</th><th className="r">Brier Kairos</th><th className="r">Brier base rates</th><th className="r">Skill vs base</th><th className="r">Best w</th><th className="r">w in use</th></tr></thead>
+              <thead><tr><th>Question</th><th className="r">n</th><th className="r">Brier model</th><th className="r">Brier base rates</th><th className="r">Skill vs base</th><th className="r">Best w</th><th className="r">w in use</th></tr></thead>
               <tbody>
                 {Object.entries<any>(vb).map(([k, r]) => (
                   <tr key={k}><td className="amb">{k}</td><td className="r">{r.n}</td><td className="r">{fx(r.brier_kairos, 4)}</td><td className="r">{fx(r.brier_base_rates, 4)}</td>
@@ -146,7 +149,7 @@ export function EvalView() {
               </tbody>
             </table>
           ) : <div className="empty">Needs labelled v2 decisions (each is scored after its horizon)</div>}
-          <div className="muted" style={{ padding: "4px 8px" }}>Decisions use w · Kairos + (1 − w) · base rates. w is fitted on labelled outcomes once a question has 100; until then it is 0.5. Skill &gt; 0 = Kairos adds information beyond the base rates.</div>
+          <div className="muted" style={{ padding: "4px 8px" }}>Decisions use w · model + (1 − w) · base rates. w is fitted on labelled outcomes once a question has 100; until then it is 0.5. Skill &gt; 0 = the model adds information beyond the base rates. Weights are fitted per model and per trading timeframe.</div>
         </Panel>
         <Panel code="PRB" title="Consistency probes" tight><KV rows={[
           ["Repeat probes", cons.repeat_probes], ["Identical answers", fx(cons.repeat_identical_share, 3)], ["Mean max |Δp| on repeat", fx(cons.repeat_max_abs_prob_diff_mean, 4)],
@@ -191,7 +194,7 @@ function RunsTable({ runs, overall, sel, onSel }: { runs: any[]; overall: any; s
         <td className="sym">{isAll ? "OVERALL" : `RUN ${r.id}`}{r.current && <> <span className="tag long">LIVE</span></>}</td>
         <td className="wrap" style={{ maxWidth: 280 }}>{isAll ? "all runs combined" : r.name.replace(/^Run \d+ · /, "")}</td>
         <td className="muted">{when(r)}</td>
-        <td>{isAll ? "—" : <>{c.qset || "—"} · {c.exploration_mode ? <span className="tag xp">EXPLORE</span> : <span className="tag amb">STRICT</span>} · {(c.symbols || []).length} sym</>}</td>
+        <td>{isAll ? "—" : <><b className="amb">{c.model_provider ? String(c.model_provider).toUpperCase() : "KAIROS"}</b> · {c.qset || "—"} · {c.exploration_mode ? <span className="tag xp">EXPLORE</span> : <span className="tag amb">STRICT</span>} · {(c.symbols || []).length} sym</>}</td>
         <td className="r">{r.decisions}</td>
         <td className="r">{r.labelled}</td>
         <td className="r">{r.closed}{r.open_trades ? <span className="muted"> +{r.open_trades} open</span> : ""}</td>
@@ -210,7 +213,7 @@ function RunsTable({ runs, overall, sel, onSel }: { runs: any[]; overall: any; s
   };
   return (
     <table className="t">
-      <thead><tr><th>Run</th><th>Setup</th><th>Period</th><th>Config</th><th className="r">Kairos req</th><th className="r">Labelled</th><th className="r">Trades</th>
+      <thead><tr><th>Run</th><th>Setup</th><th>Period</th><th>Config</th><th className="r">Model req</th><th className="r">Labelled</th><th className="r">Trades</th>
         <th className="r">Net PnL $</th><th className="r">Fees $</th><th className="r">Win</th><th className="r">Avg R</th><th className="r">PF</th>
         <th className="r">Entry slip</th><th className="r">Stop slip</th><th className="r">Strict / explore signals</th><th className="r">Skill L / S</th><th className="r">vs base</th></tr></thead>
       <tbody>{runs.map((r) => row(r))}{overall && row(overall, true)}</tbody>
@@ -239,7 +242,7 @@ export function TradesView() {
       <section className="pnl">
         <div className="ph"><span className="code">TRD</span>Bot trades · {run ? `Run ${run}` : "all runs"} · Bybit testnet<span className="ph-r">P&amp;L, fees and exit price summed from every Bybit closed-PnL row</span></div>
         <div className="pb tight scroll">
-          {!ts ? <div className="empty">Loading…</div> : !ts.length ? <div className="empty">No trades yet. They appear once a Kairos key is set and AUTO-TRADE is on.</div> : (
+          {!ts ? <div className="empty">Loading…</div> : !ts.length ? <div className="empty">No trades yet. They appear once a model key is set and AUTO-TRADE is on.</div> : (
             <table className="t">
               <thead><tr><th>Run</th><th>Opened</th><th>Sym</th><th>Side</th><th>Mode</th><th className="r">Qty (req)</th><th className="r">Ref</th><th className="r">Entry</th><th className="r">Slip bp</th><th className="r">TP</th><th className="r">SL</th>
                 <th>Status</th><th>Exit</th><th className="r">Exit px</th><th className="r">Exit slip</th><th className="r">Fills</th><th className="r">PnL</th><th className="r">Fees</th><th className="r">R</th><th className="r">EV R</th><th>Dec</th></tr></thead>
@@ -296,7 +299,7 @@ export function NewsView() {
                 })}
               </tbody>
             </table>
-          ) : <div className="empty">No news forecasts yet. New headlines that mention a traded asset are sent to Kairos news_return.</div>}
+          ) : <div className="empty">No news forecasts yet. New headlines that mention a traded asset are sent to Kairos news_return (Kairos only; paused while another model is active).</div>}
         </div>
       </section>
       <section className="pnl">

@@ -18,6 +18,7 @@ def config_snapshot(s: Settings) -> dict[str, Any]:
     from .kairos.questions import QUESTION_SET_VERSION
 
     return {
+        "model_provider": s.model_provider, "model_id": s.model_spec.model,
         "symbols": s.symbols, "decision_tf": s.decision_tf, "horizon_minutes": s.horizon_bars * s.decision_tf_minutes,
         "qset": QUESTION_SET_VERSION, "exploration_mode": s.exploration_mode, "exit_mode": s.exit_mode,
         "risk_per_trade_pct": s.risk_per_trade_pct, "explore_risk_pct": s.explore_risk_pct, "max_positions": s.max_positions,
@@ -35,7 +36,8 @@ def start(db: DB, s: Settings, name: str | None = None, notes: str | None = None
     db.conn.execute("UPDATE runs SET ended_ts=? WHERE ended_ts IS NULL", (now,))
     n = (db.one("SELECT COUNT(*) n FROM runs") or {}).get("n", 0) + 1
     cfg = config_snapshot(s)
-    auto = f"Run {n} · {cfg['qset']} · {'explore' if cfg['exploration_mode'] else 'strict'} · {len(cfg['symbols'])} symbols"
+    auto = (f"Run {n} · {s.model_spec.label} · {cfg['qset']} · {'explore' if cfg['exploration_mode'] else 'strict'} · "
+            f"{len(cfg['symbols'])} symbols")
     rid = db.insert("runs", {"name": name or auto, "started_ts": now, "ended_ts": None, "notes": notes, "config_json": cfg})
     return db.one("SELECT * FROM runs WHERE id=?", (rid,))
 

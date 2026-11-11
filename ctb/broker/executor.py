@@ -142,6 +142,7 @@ class Executor:
         self.price_fn: Callable[[str], dict[str, Any]] | None = None  # testnet ticker, attached by the engine
         self._managed: dict[str, dict[str, Any]] = {}  # symbol -> open managed trade (stop watch)
         self._exiting: set[str] = set()
+        self._entry_lock = asyncio.Lock()
         self._stop_fired: set[int] = set()  # trade ids whose managed stop already fired (fire once)
         self._dislocation_noted: set[int] = set()
         self.mainnet_fn: Callable[[str], dict[str, Any]] | None = None  # mainnet ticker, attached by the engine
@@ -230,73 +231,82 @@ class Executor:
         from ..policy import size_position
 
         async with self.lock(symbol):
-            blocked = self.check_guards(symbol)
-            if blocked:
-                return {"ok": False, "reason": blocked}
-            same = sum(1 for p in self.positions if (p["side"] == "Buy") == (side == "long"))
-            if same >= self.s.max_same_side:
-                return {"ok": False, "reason": f"{same} {side} positions open (max same side {self.s.max_same_side})"}
-            t0 = time.time()
-            inst = self.instruments[symbol]
-            tick, step = inst["tick_size"], inst["qty_step"]
-            buy = side == "long"
-            sign = 1 if buy else -1
+            # Portfolio caps (positions, same side, open stop-risk) are checked and the trade is
+            # recorded as 'opening' under one lock, so concurrent entries cannot all pass a cap.
+            async with self._entry_lock:
+                blocked = self.check_guards(symbol)
+                if blocked:
+                    return {"ok": False, "reason": blocked}
+                # Count the bot's own open AND in-flight trades: fast models answer every symbol at once,
+                # so several entries run concurrently and the exchange snapshot lags the ones still filling.
+                book_side = self.db.query("SELECT side FROM trades WHERE status IN ('open','opening')")
+                same = max(sum(1 for t in book_side if t["side"] == side),
+                           sum(1 for p in self.positions if (p["side"] == "Buy") == (side == "long")))
+                if same >= self.s.max_same_side:
+                    return {"ok": False, "reason": f"{same} {side} positions open or opening (max same side {self.s.max_same_side})"}
+                if max(len(book_side), len(self.positions)) >= self.s.max_positions:
+                    return {"ok": False, "reason": f"max positions ({self.s.max_positions}) reached"}
+                t0 = time.time()
+                inst = self.instruments[symbol]
+                tick, step = inst["tick_size"], inst["qty_step"]
+                buy = side == "long"
+                sign = 1 if buy else -1
 
-            book = await self.client.orderbook(symbol, 50)
-            levels = book["asks"] if buy else book["bids"]
-            if not levels or not book["bids"] or not book["asks"]:
-                return {"ok": False, "reason": "testnet book is empty"}
-            ref = levels[0][0]  # best price we can trade at right now
-            mid = (book["bids"][0][0] + book["asks"][0][0]) / 2
-            spread_bp = (book["asks"][0][0] - book["bids"][0][0]) / mid * 10000
-            raw_cap = ref * (1 + sign * self.s.max_entry_slip_bp / 10000)
-            cap = round((math.floor(raw_cap / tick + 1e-9) if buy else math.ceil(raw_cap / tick - 1e-9)) * tick, 10)
-            depth = depth_within(levels, cap, buy=buy)
+                book = await self.client.orderbook(symbol, 50)
+                levels = book["asks"] if buy else book["bids"]
+                if not levels or not book["bids"] or not book["asks"]:
+                    return {"ok": False, "reason": "testnet book is empty"}
+                ref = levels[0][0]  # best price we can trade at right now
+                mid = (book["bids"][0][0] + book["asks"][0][0]) / 2
+                spread_bp = (book["asks"][0][0] - book["bids"][0][0]) / mid * 10000
+                raw_cap = ref * (1 + sign * self.s.max_entry_slip_bp / 10000)
+                cap = round((math.floor(raw_cap / tick + 1e-9) if buy else math.ceil(raw_cap / tick - 1e-9)) * tick, 10)
+                depth = depth_within(levels, cap, buy=buy)
 
-            equity = float(self.wallet["equity"])
-            risk_pct = min(self.s.explore_risk_pct, self.s.risk_per_trade_pct) if exploration else None
-            qty_raw, _ = size_position(equity, sl_bp, ref, self.s, risk_pct)
-            # portfolio stop-risk cap: open risk + this trade <= max_open_risk_pct of equity (shrink to fit)
-            open_risk = sum(t["risk_usd"] or 0 for t in self.db.query("SELECT risk_usd FROM trades WHERE status IN ('open','opening')"))
-            room = equity * self.s.max_open_risk_pct / 100 - open_risk
-            per_unit_risk = ref * sl_bp / 10000
-            risk_qty = room / per_unit_risk if per_unit_risk > 0 else 0.0
-            qty = _floor_step(max(0.0, min(qty_raw, inst["max_qty"], depth, risk_qty)), step)
-            if qty < inst["min_qty"] or qty * ref < inst["min_notional"]:
-                if risk_qty < qty_raw and risk_qty <= depth:
-                    why = f"open stop-risk {open_risk:.0f} USDT leaves no room under {self.s.max_open_risk_pct}% of equity"
-                elif depth < qty_raw:
-                    why = f"only {depth:g} on the testnet book within {self.s.max_entry_slip_bp:g}bp of {ref}"
-                else:
-                    why = f"size {qty} below exchange minimum"
-                return {"ok": False, "reason": why}
+                equity = float(self.wallet["equity"])
+                risk_pct = min(self.s.explore_risk_pct, self.s.risk_per_trade_pct) if exploration else None
+                qty_raw, _ = size_position(equity, sl_bp, ref, self.s, risk_pct)
+                # portfolio stop-risk cap: open risk + this trade <= max_open_risk_pct of equity (shrink to fit)
+                open_risk = sum(t["risk_usd"] or 0 for t in self.db.query("SELECT risk_usd FROM trades WHERE status IN ('open','opening')"))
+                room = equity * self.s.max_open_risk_pct / 100 - open_risk
+                per_unit_risk = ref * sl_bp / 10000
+                risk_qty = room / per_unit_risk if per_unit_risk > 0 else 0.0
+                qty = _floor_step(max(0.0, min(qty_raw, inst["max_qty"], depth, risk_qty)), step)
+                if qty < inst["min_qty"] or qty * ref < inst["min_notional"]:
+                    if risk_qty < qty_raw and risk_qty <= depth:
+                        why = f"open stop-risk {open_risk:.0f} USDT leaves no room under {self.s.max_open_risk_pct}% of equity"
+                    elif depth < qty_raw:
+                        why = f"only {depth:g} on the testnet book within {self.s.max_entry_slip_bp:g}bp of {ref}"
+                    else:
+                        why = f"size {qty} below exchange minimum"
+                    return {"ok": False, "reason": why}
 
-            lev = min(self.s.max_leverage, int(inst["max_leverage"]))
-            if symbol not in self._lev_set:
-                await self.client.set_leverage(symbol, lev)
-                self._lev_set.add(symbol)
+                lev = min(self.s.max_leverage, int(inst["max_leverage"]))
+                if symbol not in self._lev_set:
+                    await self.client.set_leverage(symbol, lev)
+                    self._lev_set.add(symbol)
 
-            managed = self.s.exit_mode == "managed"
-            stop_mult = self.s.backstop_mult if managed else 1.0
-            # provisional bracket valid for any fill inside the cap; re-anchored to the real fill below.
-            # Managed mode attaches only the far backstop stop; the target becomes a resting limit.
-            tp0 = None if managed else _round_tick(cap * (1 + sign * tp_bp / 10000), tick)
-            # The managed backstop is a disaster stop: triggered on MARK price (follows mainnet, immune to
-            # stray testnet prints) and placed relative to mark, so a thin-book print cannot fire it.
-            mark0 = await self._mark(symbol) if managed else 0.0
-            sl0 = _round_tick((mark0 or cap) * (1 - sign * stop_mult * sl_bp / 10000), tick)
-            trig = "MarkPrice" if managed else self.s.tpsl_trigger
-            link = f"ctb-{decision_id}-{uuid.uuid4().hex[:8]}"
-            mode = "exploration" if exploration else "strict"
-            trade_id = self.db.insert("trades", {
-                "decision_id": decision_id, "symbol": symbol, "side": side, "qty": qty, "notional": qty * ref,
-                "entry_link_id": link, "tp_price": tp0, "sl_price": sl0, "protection": "pending",
-                "opened_ts": time.time(), "deadline_ts": time.time() + self.s.horizon_bars * self.s.decision_tf_minutes * 60,
-                "status": "opening", "ev_r": ev_r, "risk_usd": qty * ref * sl_bp / 10000, "mode": mode, "notes": mode,
-                "requested_qty": qty, "ref_price": ref, "cap_price": cap, "decision_price": decision_price,
-                "book_spread_bp": round(spread_bp, 2), "planned_sl_bp": sl_bp, "planned_tp_bp": tp_bp,
-                "exit_mode": self.s.exit_mode, "run_id": self.run_id_fn(),
-            })
+                managed = self.s.exit_mode == "managed"
+                stop_mult = self.s.backstop_mult if managed else 1.0
+                # provisional bracket valid for any fill inside the cap; re-anchored to the real fill below.
+                # Managed mode attaches only the far backstop stop; the target becomes a resting limit.
+                tp0 = None if managed else _round_tick(cap * (1 + sign * tp_bp / 10000), tick)
+                # The managed backstop is a disaster stop: triggered on MARK price (follows mainnet, immune to
+                # stray testnet prints) and placed relative to mark, so a thin-book print cannot fire it.
+                mark0 = await self._mark(symbol) if managed else 0.0
+                sl0 = _round_tick((mark0 or cap) * (1 - sign * stop_mult * sl_bp / 10000), tick)
+                trig = "MarkPrice" if managed else self.s.tpsl_trigger
+                link = f"ctb-{decision_id}-{uuid.uuid4().hex[:8]}"
+                mode = "exploration" if exploration else "strict"
+                trade_id = self.db.insert("trades", {
+                    "decision_id": decision_id, "symbol": symbol, "side": side, "qty": qty, "notional": qty * ref,
+                    "entry_link_id": link, "tp_price": tp0, "sl_price": sl0, "protection": "pending",
+                    "opened_ts": time.time(), "deadline_ts": time.time() + self.s.horizon_bars * self.s.decision_tf_minutes * 60,
+                    "status": "opening", "ev_r": ev_r, "risk_usd": qty * ref * sl_bp / 10000, "mode": mode, "notes": mode,
+                    "requested_qty": qty, "ref_price": ref, "cap_price": cap, "decision_price": decision_price,
+                    "book_spread_bp": round(spread_bp, 2), "planned_sl_bp": sl_bp, "planned_tp_bp": tp_bp,
+                    "exit_mode": self.s.exit_mode, "run_id": self.run_id_fn(),
+                })
             try:
                 res = await self.client.market_order(symbol, "buy" if buy else "sell", _fmt(qty, step), link_id=link,
                                                      take_profit=_fmt(tp0, tick) if tp0 else None, stop_loss=_fmt(sl0, tick), limit_price=_fmt(cap, tick),

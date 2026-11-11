@@ -2,7 +2,7 @@
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, post } from "@/lib/api";
 import { loadOverview, selectSymbol, selectTf } from "@/lib/data";
-import { setState, useStore } from "@/lib/store";
+import { setState, useModelLabel, useStore } from "@/lib/store";
 import { age, cssVar, dt, fx, hhmm, hhmmss, isNum, px, sg, short, TFL, ud, usd } from "@/lib/format";
 import { PerfChart, PerfLegend, PriceChart } from "./Charts";
 import { ask, setPosCap, useNow } from "./TopBar";
@@ -26,7 +26,7 @@ export function MonitorView({ hidden }: { hidden: boolean }) {
           <PriceChart />
         </section>
         <section className="pnl a-kai">
-          <Ph code="KRS" right={<><button className="mini" onClick={() => ask(false)}>ASK</button><button className="mini" onClick={() => ask(true)} data-tip="Ask + repeat & mirror consistency probes (3 extra requests)">+PRB</button></>}>Kairos signal</Ph>
+          <Ph code="KRS" right={<><button className="mini" onClick={() => ask(false)}>ASK</button><button className="mini" onClick={() => ask(true)} data-tip="Ask + repeat & mirror consistency probes (3 extra requests)">+PRB</button></>}><ModelName /> signal</Ph>
           <div className="pb scroll"><KairosPanel /></div>
         </section>
         <section className="pnl a-acct"><Account /></section>
@@ -46,7 +46,7 @@ export function MonitorView({ hidden }: { hidden: boolean }) {
         <section className="pnl a-tape"><Tape /></section>
         <section className="pnl a-stats"><Stats /></section>
         <section className="pnl a-log">
-          <Ph code="BLTR" right="click a row for the full request / response">Kairos decision blotter</Ph>
+          <Ph code="BLTR" right="click a row for the full request / response">Decision blotter · <ModelName /></Ph>
           <div className="pb tight scroll"><Blotter /></div>
         </section>
       </div>
@@ -147,7 +147,7 @@ function ChartHeader() {
       <span className="seg">
         {Object.entries(TFL).map(([k, l]) => <button key={k} className={k === tf ? "on" : ""} onClick={() => selectTf(k)}>{l}</button>)}
       </span>
-      <span className="legend"><i style={{ ["--c" as any]: "var(--amber)" }} />EMA20 <i style={{ ["--c" as any]: "var(--s1)" }} />EMA50 <i className="tri" />Kairos</span>
+      <span className="legend"><i style={{ ["--c" as any]: "var(--amber)" }} />EMA20 <i style={{ ["--c" as any]: "var(--s1)" }} />EMA50 <i className="tri" /><ModelName /></span>
       <span className="ph-r">
         {tn && <>TESTNET {px(tn)} <span className={div !== null && Math.abs(div) > maxDiv ? "dn" : ""} data-tip="Testnet last vs mainnet last. Entries and brackets use the testnet book.">{sg(div, 1)}bp</span></>}
       </span>
@@ -155,7 +155,11 @@ function ChartHeader() {
   );
 }
 
-/* ---------------------------------------------------------------- Kairos */
+/* ---------------------------------------------------------------- model signal */
+function ModelName() {
+  return <>{useModelLabel()}</>;
+}
+
 function PBars({ probs, labels }: { probs: Record<string, number>; labels?: Record<string, string> }) {
   const e = Object.entries(probs), mx = Math.max(...e.map((x) => x[1]));
   return <>{e.map(([k, v]) => (
@@ -173,7 +177,7 @@ function KairosPanel() {
   if (!d)
     return (
       <>
-        <div className="kv-verdict"><span className="big muted">NO SIGNAL</span><span className="why">{ov?.kairos.configured ? `Kairos is asked on every closed ${ov.settings.decision_tf_minutes}m bar. Type ASK to ask now.` : "Add a Kairos key (type KEYS) to start receiving signals."}</span></div>
+        <div className="kv-verdict"><span className="big muted">NO SIGNAL</span><span className="why">{ov?.kairos.configured ? `${ov.kairos.label} is asked on every closed ${ov.settings.decision_tf_minutes}m bar. Type ASK to ask now.` : `Add a ${ov?.kairos.label || "model"} key (type KEYS) to start receiving signals.`}</span></div>
         {pv && <div className="kv"><div className="k">Next bracket SL</div><div className="v">{fx(pv.meta.sl_bp / 100, 2)}%</div><div className="k">Next bracket TP</div><div className="v">{fx(pv.meta.tp_bp / 100, 2)}%</div><div className="k">Horizon</div><div className="v">{pv.meta.horizon_min} min</div></div>}
       </>
     );
@@ -195,9 +199,9 @@ function KairosPanel() {
         <span className="why">{d.reason}</span>
       </div>
       <div className="evrow">
-        <div data-tip={v2 ? `Calibrated EV (Kairos blended with this bracket's base rates).\nRaw Kairos ${sg(d.ev_long_raw_r, 3)}R · base rates alone ${sg(d.ev_long_base_r, 3)}R` : undefined}>
+        <div data-tip={v2 ? `Calibrated EV (the model blended with this bracket's base rates).\nRaw model ${sg(d.ev_long_raw_r, 3)}R · base rates alone ${sg(d.ev_long_base_r, 3)}R` : undefined}>
           <div className="l">EV long{v2 && " · cal"}</div><div className={`n ${ud(d.ev_long_r)}`}>{sg(d.ev_long_r, 3)}R{v2 && raw(d.ev_long_raw_r)}</div></div>
-        <div data-tip={v2 ? `Calibrated EV.\nRaw Kairos ${sg(d.ev_short_raw_r, 3)}R · base rates alone ${sg(d.ev_short_base_r, 3)}R` : undefined}>
+        <div data-tip={v2 ? `Calibrated EV.\nRaw model ${sg(d.ev_short_raw_r, 3)}R · base rates alone ${sg(d.ev_short_base_r, 3)}R` : undefined}>
           <div className="l">EV short{v2 && " · cal"}</div><div className={`n ${ud(d.ev_short_r)}`}>{sg(d.ev_short_r, 3)}R{v2 && raw(d.ev_short_raw_r)}</div></div>
         <div><div className="l">Setup 0–4</div><div className="n">{fx(d.setup_quality, 2)}</div></div>
       </div>
@@ -210,9 +214,9 @@ function KairosPanel() {
       {p.return_distribution && <div className="qb"><div className="qt"><span>Return distribution</span><span>E = {sg(d.expected_move_in_d, 2)} × stop</span></div><PBars probs={p.return_distribution.probs} labels={binL} /></div>}
       {v2 ? (
         <div className="kfoot">
-          <div data-tip="Calibrated P(price higher at horizon); raw = Kairos alone"><b>P(up) cal · raw</b>{(100 * d.p_up).toFixed(0)}% · {isNum(d.p_up_raw) ? (100 * d.p_up_raw).toFixed(0) + "%" : "—"}</div>
+          <div data-tip="Calibrated P(price higher at horizon); raw = model alone"><b>P(up) cal · raw</b>{(100 * d.p_up).toFixed(0)}% · {isNum(d.p_up_raw) ? (100 * d.p_up_raw).toFixed(0) + "%" : "—"}</div>
           <div data-tip="Calibrated P(price moves ≥ 1 stop either way within the horizon)"><b>Big move</b>{isNum(d.p_big_move) ? (100 * d.p_big_move).toFixed(0) + "%" : "—"}</div>
-          <div><b>Mean rev · w(Kairos)</b>{p.mean_reversion ? (100 * p.mean_reversion.p).toFixed(0) + "%" : "—"} · {isNum(d.weights?.long_bracket) ? fx(d.weights.long_bracket, 2) : "—"}</div>
+          <div><b>Mean rev · w(model)</b>{p.mean_reversion ? (100 * p.mean_reversion.p).toFixed(0) + "%" : "—"} · {isNum(d.weights?.long_bracket) ? fx(d.weights.long_bracket, 2) : "—"}</div>
         </div>
       ) : (
         <div className="kfoot">
@@ -563,7 +567,7 @@ function Blotter() {
   const symbol = useStore((s) => s.symbol);
   const horizon = useStore((s) => s.ov?.settings.horizon_minutes);
   const rows = decisions.slice(0, 150);
-  if (!rows.length) return <div className="empty">No Kairos decisions yet</div>;
+  if (!rows.length) return <div className="empty">No model decisions yet</div>;
   return (
     <table className="t">
       <thead><tr><th>Time</th><th>Sym</th><th>Signal</th><th className="r">Price</th><th className="r">EV long</th><th className="r">EV short</th><th className="r">Setup</th><th className="r">SL/TP %</th><th className="r">ms</th><th>Outcome (labelled)</th><th>Reason / gates</th></tr></thead>

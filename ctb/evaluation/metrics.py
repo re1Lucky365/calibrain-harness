@@ -171,8 +171,11 @@ def binary_block(name: str, rows: list[tuple[float, bool]]) -> dict[str, Any]:
 
 
 def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None, decision_tf: str | None = None,
-            qset: str | None = None, run_id: int | None = None) -> dict[str, Any]:
+            qset: str | None = None, run_id: int | None = None, model: str | None = None) -> dict[str, Any]:
     where, params = ["probe IS NULL"], []
+    if model:
+        where.append("model_provider=?")
+        params.append(model)
     if run_id:
         where.append("run_id=?")
         params.append(run_id)
@@ -191,7 +194,7 @@ def compute(db: DB, *, symbol: str | None = None, since_ts: float | None = None,
     w = " AND ".join(where)
     decs = db.query(f"SELECT id, ts, symbol, parsed_json, issues_json, usage_json, latency_ms, attempts, error_kind, error_msg, "
                     f"decision_json, action, label_json, sl_bp, tp_bp, model_meta_json, request_bytes, qset_version FROM decisions WHERE {w} ORDER BY ts", params)
-    out: dict[str, Any] = {"generated_from": {"decisions": len(decs), "symbol": symbol, "decision_tf": decision_tf, "qset": qset, "run_id": run_id}}
+    out: dict[str, Any] = {"generated_from": {"decisions": len(decs), "symbol": symbol, "decision_tf": decision_tf, "qset": qset, "run_id": run_id, "model": model}}
 
     # ---------------- ops
     ok = [d for d in decs if not d["error_kind"]]

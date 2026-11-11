@@ -19,6 +19,7 @@ from .engine import Engine
 from .evaluation import metrics as metrics_mod
 from .evaluation import report as report_mod
 from .market.store import TIMEFRAMES
+from . import models as models_mod
 from . import runs as runs_mod
 from . import universe as universe_mod
 
@@ -97,7 +98,9 @@ def make_app(engine: Engine) -> web.Application:
                 "ws_connected": st.ws_connected, "ws_messages": st.ws_messages, "ws_last_msg_age_s": time.time() - st.ws_last_msg if st.ws_last_msg else None,
                 "errors": list(st.data_errors)[-15:], "fear_greed": st.context.get("fear_greed"), "macro": st.context.get("macro"),
             },
-            "kairos": {"configured": engine.kairos.configured, "requests_last_hour": engine.budget.used(),
+            # "kairos" = the ACTIVE classification model's status (key name kept for older clients)
+            "kairos": {"provider": engine.kairos.provider, "label": engine.kairos.spec.label, "model_id": engine.kairos.model,
+                       "configured": engine.kairos.configured, "requests_last_hour": engine.budget.used(),
                        "budget_per_hour": engine.budget.per_hour, "news_requests_last_hour": engine.news_budget.used(),
                        "last_error": engine.last_decision_error, "probe_rate": engine.probe_rate, "inflight": sorted(engine.inflight)},
             "account": ex.account_view() if ex else None,
@@ -208,16 +211,18 @@ def make_app(engine: Engine) -> web.Application:
         tf = req.query.get("tf") or None
         qset = req.query.get("qset") or None
         run = int(req.query["run"]) if req.query.get("run") else None
+        model = req.query.get("model") or None
         since = time.time() - float(hours) * 3600 if hours else None
-        m = await asyncio.to_thread(metrics_mod.compute, engine.db, symbol=sym, since_ts=since, decision_tf=tf, qset=qset, run_id=run)
+        m = await asyncio.to_thread(metrics_mod.compute, engine.db, symbol=sym, since_ts=since, decision_tf=tf, qset=qset, run_id=run, model=model)
         m["calibration_weights"] = {"weights": engine.calibrator.weights, "fitted_at": engine.calibrator.fitted_at,
                                     "report": engine.calibrator.report}
         m["observations"] = report_mod.observations(m)
         return j(m)
 
     @routes.get("/api/report")
-    async def report(_: web.Request) -> web.Response:
-        m = await asyncio.to_thread(metrics_mod.compute, engine.db)
+    async def report(req: web.Request) -> web.Response:
+        m = await asyncio.to_thread(metrics_mod.compute, engine.db, model=req.query.get("model") or None,
+                                    run_id=int(req.query["run"]) if req.query.get("run") else None)
         md = report_mod.render(m, s.public_view())
         out = ROOT / "data" / "kairos_report.md"
         out.write_text(md, encoding="utf-8")
@@ -260,7 +265,7 @@ def make_app(engine: Engine) -> web.Application:
         if sym not in engine.store.state:
             return j({"error": "unknown symbol"}, 404)
         if not engine.kairos.configured:
-            return j({"error": "KAIROS_API_KEY is not set"}, 400)
+            return j({"error": f"{engine.kairos.spec.key_env} is not set"}, 400)
         row = await engine.decide(sym, force_probe=bool(body.get("probe")))
         return j(engine._decision_view(row) if row else {"skipped": True})
 
@@ -374,6 +379,9 @@ def make_app(engine: Engine) -> web.Application:
     async def keys_status(_: web.Request) -> web.Response:
         return j({
             "kairos": {**key_hint(s.kairos_api_key), "base_url": s.kairos_base_url},
+            "jev": {**key_hint(models_mod.MODELS["jev"].api_key), "base_url": models_mod.MODELS["jev"].base_url,
+                    "model_id": models_mod.MODELS["jev"].model},
+            "active_model": s.model_provider,
             "bybit": {"api_key": key_hint(s.bybit_api_key), "api_secret": key_hint(s.bybit_api_secret),
                       "connected": bool(engine.executor and not engine.executor.sync_error),
                       "error": engine.executor.sync_error if engine.executor else None},
@@ -406,7 +414,28 @@ def make_app(engine: Engine) -> web.Application:
 
     @routes.post("/api/keys/kairos/test")
     async def keys_kairos_test(_: web.Request) -> web.Response:
-        return j(await engine.test_kairos())
+        return j(await engine.test_model("kairos"))
+
+    @routes.post("/api/keys/jev")
+    async def keys_jev(req: web.Request) -> web.Response:
+        body = await req.json()
+        key = str(body.get("api_key", "")).strip()
+        if not key:
+            return j({"error": "API key is required"}, 400)
+        return j(await engine.set_model_key("jev", key))
+
+    @routes.post("/api/keys/jev/test")
+    async def keys_jev_test(_: web.Request) -> web.Response:
+        return j(await engine.test_model("jev"))
+
+    @routes.post("/api/model")
+    async def set_model(req: web.Request) -> web.Response:
+        """Switch the classification model (only while flat; starts a new run)."""
+        body = await req.json()
+        try:
+            return j(await engine.set_model(str(body.get("provider", "")).strip().lower()))
+        except ValueError as exc:
+            return j({"error": str(exc)}, 409)
 
     @routes.get("/stream")
     async def stream(req: web.Request) -> web.StreamResponse:
@@ -582,7 +611,8 @@ def main() -> None:
         s.trading_enabled = True  # restart requested by the symbol picker while auto-trade was on
     engine = Engine(s)
     print(f"Calibrain Harness: http://{s.host}:{s.port}  (venue: Bybit TESTNET, "
-          f"kairos key {'set' if s.kairos_api_key else 'NOT set'}, trading {'ON' if s.trading_enabled else 'observe-only'})")
+          f"model {s.model_spec.label} ({s.model_spec.model}) key {'set' if s.model_spec.api_key else 'NOT set'}, "
+          f"trading {'ON' if s.trading_enabled else 'observe-only'})")
     web.run_app(make_app(engine), host=s.host, port=s.port, print=None)
 
 

@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="status: under development" src="https://img.shields.io/badge/status-under%20development-ff9a2e?style=flat-square">
   <img alt="venue: Bybit testnet only" src="https://img.shields.io/badge/venue-Bybit%20testnet%20only-3a3a3a?style=flat-square">
-  <img alt="models: Kairos" src="https://img.shields.io/badge/models-Kairos-3a3a3a?style=flat-square">
+  <img alt="models: Kairos | Jev" src="https://img.shields.io/badge/models-Kairos%20%7C%20Jev-3a3a3a?style=flat-square">
   <img alt="python 3.12" src="https://img.shields.io/badge/python-3.12-3a3a3a?style=flat-square">
   <img alt="next.js 16" src="https://img.shields.io/badge/next.js-16-3a3a3a?style=flat-square">
   <a href="LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-3a3a3a?style=flat-square"></a>
@@ -43,20 +43,28 @@ You get two things: a trading bot, and an honest evaluation of the model behind 
 ### Supported models
 
 Calibrain Harness is built for any fast classifier that returns calibrated probabilities over a fixed set
-of options, such as **Kairos**, **Jev** and similar models. Right now only **Kairos** is supported.
+of options. **Kairos** and **Jev** are supported today; switch between them live with **MODEL** in the
+terminal's function-key bar.
 
-| Model | Status |
-|---|---|
-| **Kairos** (`DMIND/Kairos` on [Minara Cloud](https://minara.cloud)) | Supported |
-| Jev | Planned |
-| Other multiple-choice probability models | Planned, via a model adapter |
+| Model | Provider | Model id | Key | Status |
+|---|---|---|---|---|
+| **Kairos** | DMind via [Minara Cloud](https://minara.cloud) | `DMIND/Kairos` | `KAIROS_API_KEY` | Supported (also powers news_return forecasts) |
+| **Jev** | [TypeSafe](https://docs.typesafe.ai) | `jev-1.14.0` (pinned; override with `CTB_JEV_MODEL`) | `TYPESAFE_API_KEY` | Supported |
+| Other System One style models | | | | Add a `ModelSpec` in `ctb/models.py` |
+
+Both are called the same way (`POST /v1/systemone` with a state and typed questions), so the question
+set, validation, calibration, policy and evaluation are shared. What is kept **per model**: every
+decision is stamped with the model that made it, calibration weights are fitted per model (and per
+trading timeframe), EVAL and reports filter by model, and switching models starts a new run (only
+while the bot is flat), so results never mix two models.
 
 ## Features
 
 - **Bloomberg-style terminal.** Next.js front end fed by one WebSocket: candles, order book with
   depth chart and wall detection, market map, liquidation and block tape, derivatives and flow, the
-  Kairos signal with calibrated vs raw expected value, and a decision blotter with the full request
+  model signal with calibrated vs raw expected value, and a decision blotter with the full request
   and response for every call.
+- **Multiple models.** Kairos and Jev behind one interface, switchable live, evaluated separately.
 - **Labellable question set** with the instrument's own **base rates** in the state, so the model
   starts from how often each outcome really happens and is measured against that.
 - **Calibration layer.** Decisions blend the model with the base rates; the weight is fitted on
@@ -72,7 +80,7 @@ of options, such as **Kairos**, **Jev** and similar models. Right now only **Kai
 
 ## Quick start
 
-Requirements: Python 3.12, Node.js 20+ with npm, a Kairos API key and Bybit **testnet** API keys.
+Requirements: Python 3.12, Node.js 20+ with npm, a Kairos or Jev API key, and Bybit **testnet** API keys.
 
 ```bash
 git clone https://github.com/zadescoxp/calibrain-harness.git
@@ -93,7 +101,8 @@ Open http://127.0.0.1:8800. The Python service serves the built UI, the API and 
 socket from that one address; there is no separate Node process to run.
 
 - **Keys.** Kairos keys come from [minara.cloud](https://minara.cloud) and must belong to a
-  Kairos-enabled group. Bybit testnet keys come from
+  Kairos-enabled group. Jev keys come from the [TypeSafe console](https://console.typesafe.ai/keys).
+  Choose the model with `CTB_MODEL_PROVIDER=kairos|jev` or MODEL in the terminal. Bybit testnet keys come from
   [testnet.bybit.com → API management](https://testnet.bybit.com/app/user/api-management) with
   Contract → Orders + Positions and **no withdrawal permission**.
 - **Observe-only first.** The bot starts without placing orders. Decisions are made and scored;
@@ -116,7 +125,8 @@ the API and the live socket work either way.
 
 ```bash
 .venv/bin/python -m pytest -q tests                       # unit tests (no network)
-.venv/bin/python scripts/kairos_smoke.py SOLUSDT          # one real Kairos request + contract validation
+.venv/bin/python scripts/kairos_smoke.py SOLUSDT          # one real request to the active model + validation
+.venv/bin/python scripts/kairos_smoke.py SOLUSDT --model jev   # same, against a specific model
 .venv/bin/python scripts/testnet_smoke.py SOLUSDT long    # min-size testnet open -> verify stop -> close
 ```
 
@@ -124,10 +134,10 @@ the API and the live socket work either way.
 
 | Screen | Key | What it shows |
 |---|---|---|
-| MON | F1 | Watchlist, chart with model markers, Kairos signal, account and positions, relative performance, market map, order book, news, liquidations, derivatives/flow/trend, decision blotter |
-| EVAL | F2 | Findings, calibration, EV ranking, PIT, per-question scores, Kairos vs base rates, probes, operations, testnet P&L, execution quality; filter by run, symbol, question set, timeframe |
+| MON | F1 | Watchlist, chart with model markers, model signal, account and positions, relative performance, market map, order book, news, liquidations, derivatives/flow/trend, decision blotter |
+| EVAL | F2 | Findings, calibration, EV ranking, PIT, per-question scores, model vs base rates, probes, operations, testnet P&L, execution quality; filter by model, run, symbol, question set, timeframe |
 | TRADES | F3 | Runs table (Run 1, 2, 3 … and Overall) and every trade with reference price, slippage, fills and exact R |
-| NEWS | F4 | Model news_return forecasts and headlines |
+| NEWS | F4 | Kairos news_return forecasts (Kairos only) and headlines |
 | LOG | F5 | System events |
 
 Command line (press `/`): `BTC`, `ETH` … load a symbol · `ASK` / `PRB` ask the model now (with
@@ -144,7 +154,7 @@ Bybit mainnet public data (sharded WS + REST)        news RSS · Fear & Greed ·
         └──► features.py: compact, unit-labelled state + historical base rates for the bracket
                    │
                    ▼
-   model (Kairos /v1/systemone): 7 labellable questions per closed bar per symbol
+   model (Kairos or Jev, /v1/systemone): 7 labellable questions per closed bar per symbol
    long bracket · short bracket · return distribution · direction · big move · mean reversion · setup quality
                    │
                    ▼
@@ -198,7 +208,7 @@ horizons.
 |---|---|
 | Ask *which is hit first within the horizon* instead of *buy / sell / hold* | Every answer is labellable from price data, so calibration and skill are measurable. Code, not the model, decides. |
 | Show the model the instrument's base rates | v1 forecasts expected far more movement than happened. Anchoring on measured frequencies fixed most of that, and gives a fair baseline to beat. |
-| 7 questions per request | Kairos allows up to 8; each question carries the full state, so fewer questions means fewer tokens and lower latency. |
+| 7 questions per request | Kairos allows up to 8 (Jev limits by tokens: 64k per request, 32k per question); each question carries the full state, so fewer questions means fewer tokens and lower latency. |
 | Relative, unit-labelled features | "0.6% below EMA50" is informative; a raw MA level is not. The state stays well inside the per-question context budget. |
 | `null` until a window has data | After a restart a 60-minute flow window holds one minute of trades; reporting it as 60 minutes would mislead the model. |
 | Mainnet signals, testnet orders | Testnet flow, OI and funding are synthetic and its prices drift, so signals and labels use mainnet and orders are sized to the testnet book. |
@@ -272,7 +282,10 @@ EVAL → EXPORT MINARA REPORT writes a Markdown report.
 | `CTB_MAX_POSITIONS` / `CTB_MAX_SAME_SIDE` / `CTB_MAX_OPEN_RISK_PCT` | 3 (10 in `.env.example`) / 4 / 2 | Portfolio caps |
 | `CTB_MAX_LEVERAGE` / `CTB_MAX_NOTIONAL_USDT` / `CTB_DAILY_LOSS_LIMIT_PCT` | 3 / 5000 / 3 | Hard caps |
 | `CTB_MAX_ENTRY_SLIP_BP` / `CTB_EXIT_MODE` | 10 / managed | Entry price cap and exit handling |
-| `CTB_KAIROS_MAX_RPH` / `CTB_KAIROS_CONCURRENCY` | 120 / 6 | Model request budget and parallelism |
+| `CTB_MODEL_PROVIDER` | kairos | Which model decides: `kairos` or `jev` (or MODEL in the terminal) |
+| `KAIROS_API_KEY` / `KAIROS_BASE_URL` | – / https://minara.cloud | Kairos credentials |
+| `TYPESAFE_API_KEY` / `CTB_JEV_MODEL` | – / jev-1.14.0 | Jev credentials and pinned model version |
+| `CTB_KAIROS_MAX_RPH` / `CTB_KAIROS_CONCURRENCY` | 120 / 6 | Model request budget and parallelism (any model) |
 
 ## Safety
 
@@ -289,7 +302,8 @@ ctb/                      Python service (internal package name from the project
   config.py               settings from .env
   market/                 Bybit mainnet/testnet streams, store, news/macro context
   features.py             state builder, base rates, mirror transform
-  kairos/                 model client, versioned question sets, strict parsing, news_return
+  models.py               supported models (Kairos, Jev): endpoint, model id, key, limits, retries
+  kairos/                 System One client, versioned question sets, strict parsing, news_return
   calibration.py          model vs base-rate blending and fitting
   policy.py               EV, gates, sizing
   broker/                 signed testnet client, private stream, executor
@@ -303,7 +317,7 @@ docs/                     brand assets and demo media
 
 ## Roadmap
 
-- Model adapters so Jev and other multiple-choice probability models can be plugged in next to Kairos
+- More models next to Kairos and Jev, and side-by-side runs of two models on the same bars
 - Calibration that counts independent bars rather than decisions, with shrinkage toward the base rates
 - Limit-based exchange backstops so a testnet liquidity hole cannot fill a disaster stop
 - Longer timeframes and wider brackets, where costs are a smaller share of the stop

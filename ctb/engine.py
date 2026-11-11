@@ -22,7 +22,7 @@ from .db import DB
 from .evaluation.labeler import Labeler
 from .features import build_state, mirror_state
 from .kairos import news as news_profile
-from .kairos.client import KairosClient, KairosError, RateBudget
+from .kairos.client import KairosError, RateBudget, SystemOneClient
 from .kairos.parse import validate
 from .kairos.questions import QUESTION_SET_VERSION, build_questions
 from .market.bybit_public import BybitPublicFeed
@@ -50,7 +50,7 @@ class Engine:
         self.started_at = time.time()
         self.tasks: list[asyncio.Task] = []
         self.last_decision_error: str | None = None
-        self.calibrator = Calibrator(self.db, tf_fn=lambda: self.s.decision_tf)
+        self.calibrator = Calibrator(self.db, tf_fn=lambda: self.s.decision_tf, provider_fn=lambda: self.s.model_provider)
         self.kairos_sem = asyncio.Semaphore(max(1, s.kairos_concurrency))
 
     # ------------------------------------------------------------------ pub/sub
@@ -65,8 +65,7 @@ class Engine:
         self.session = aiohttp.ClientSession()
         self.feed = BybitPublicFeed(self.store, self.session)
         self.context = ContextFeed(self.store, self.session)
-        self.kairos = KairosClient(self.s.kairos_base_url, lambda: self.s.kairos_api_key, self.session,
-                                   model=self.s.kairos_model, timeout_s=self.s.kairos_timeout_s)
+        self.kairos = self._model_client()  # the active classification model (attribute name kept for history)
         self.labeler = Labeler(self.db, self.session, self.emit)
         self.feed.on_bar_close.append(self.on_bar_close)
         self.testnet_stream = TestnetTickerStream(self.store, self.session, self.s.symbols)
@@ -94,7 +93,8 @@ class Engine:
             asyncio.create_task(self.labeler.loop(), name="labeler"),
             asyncio.create_task(self._preview_loop(), name="preview"),
         ]
-        self.db.event("info", "started", f"engine started; kairos={'on' if self.kairos.configured else 'NOT CONFIGURED'}; "
+        self.db.event("info", "started", f"engine started; model={self.s.model_spec.label} ({self.kairos.model}) "
+                                         f"{'ready' if self.kairos.configured else 'NOT CONFIGURED'}; "
                                          f"trading={'on' if self.s.trading_enabled else 'observe-only'}")
 
     async def _start_executor(self) -> None:
@@ -151,24 +151,71 @@ class Engine:
         save_env(updates)
         if base_url:
             self.s.kairos_base_url = base_url
-            self.kairos.url = base_url + "/v1/systemone"
+            if self.s.model_provider == "kairos":
+                self.kairos = self._model_client("kairos")
         self.last_decision_error = None
         self.emit("event", self.db.event("info", "keys", "Kairos key updated from dashboard"))
-        return await self.test_kairos()
+        return await self.test_model("kairos")
+
+    def _model_client(self, provider: str | None = None) -> SystemOneClient:
+        from .models import get
+        spec = get(provider or self.s.model_provider)
+        base = self.s.kairos_base_url if spec.provider == "kairos" else None
+        return SystemOneClient(spec, self.session, timeout_s=self.s.kairos_timeout_s, base_url=base)
+
+    async def set_model(self, provider: str) -> dict[str, Any]:
+        """Switch the classification model. Only while flat: a run never mixes two models, so the
+        current run is closed and a new one starts with the new model."""
+        from . import runs as runs_mod
+        from .models import get
+        spec = get(provider)
+        if provider == self.s.model_provider:
+            return {"ok": True, "unchanged": True, "model_provider": provider}
+        if self.db.one("SELECT id FROM trades WHERE status IN ('open','opening') LIMIT 1"):
+            raise ValueError("close the open bot trades first (KILL, or wait for their exits): a run must not mix two models")
+        if not spec.api_key:
+            raise ValueError(f"{spec.key_env} is not set; add the {spec.label} key under KEYS first")
+        save_env({"CTB_MODEL_PROVIDER": provider})
+        self.s.model_provider = provider
+        self.kairos = self._model_client(provider)
+        self.calibrator.refit()
+        self.run = runs_mod.start(self.db, self.s)
+        self.last_decision_error = None
+        self.emit("event", self.db.event("warn", "model", f"model switched to {spec.label} ({self.kairos.model}); started {self.run['name']}"))
+        self.emit("settings", {"model_provider": provider})
+        return {"ok": True, "model_provider": provider, "model_id": self.kairos.model, "run": self.run}
+
+    async def set_model_key(self, provider: str, api_key: str) -> dict[str, Any]:
+        """Save a model API key, then test it with one tiny request against that model."""
+        from .models import get
+        spec = get(provider)
+        if provider == "kairos":
+            return await self.set_kairos_key(api_key)
+        save_env({spec.key_env: api_key})
+        if provider == self.s.model_provider:
+            self.kairos = self._model_client(provider)
+        self.emit("event", self.db.event("info", "keys", f"{spec.label} key updated from dashboard"))
+        return await self.test_model(provider)
 
     async def test_kairos(self) -> dict[str, Any]:
+        return await self.test_model(self.s.model_provider)
+
+    async def test_model(self, provider: str | None = None) -> dict[str, Any]:
         """One tiny live request (1 noul question, counts against the hourly budget)."""
-        if not self.kairos.configured:
-            return {"ok": False, "error": "KAIROS_API_KEY is not set"}
+        client = self.kairos if provider in (None, self.s.model_provider) else self._model_client(provider)
+        spec = client.spec
+        if not client.configured:
+            return {"ok": False, "error": f"{spec.key_env} is not set"}
         if not self.budget.try_take():
-            return {"ok": False, "error": "hourly Kairos budget exhausted"}
+            return {"ok": False, "error": "hourly model request budget exhausted"}
         try:
-            res = await self.kairos.ask({"message": "Connectivity check from classifier-trading-bot."},
+            res = await client.ask({"message": "Connectivity check from Calibrain Harness."},
                                         {"is_check": {"type": "noul", "instructions": "Does the message say it is a connectivity check?"}})
         except KairosError as exc:
             return {"ok": False, "error": f"{exc.kind}: {exc.message}", "request_id": exc.request_id}
         ans = res.answers.get("is_check", {})
-        return {"ok": True, "latency_ms": round(res.latency_ms), "answer_noul": ans.get("noul"), "model": res.metadata.get("model")}
+        return {"ok": True, "latency_ms": round(res.latency_ms), "answer_noul": ans.get("noul"),
+                "model": res.metadata.get("model") or client.model, "provider": spec.provider}
 
     async def _stop_watch(self) -> None:
         """Evaluate managed stops on the mainnet ticker (pushed ~10x/s) twice a second."""
@@ -275,6 +322,7 @@ class Engine:
         row: dict[str, Any] = {
             "ts": time.time(), "symbol": symbol, "bar_time": meta.get("bar_time"), "qset_version": QUESTION_SET_VERSION,
             "probe": probe, "probe_of": probe_of, "decision_tf": self.s.decision_tf, "run_id": self.run["id"],
+            "model_provider": self.s.model_provider,
             "state_json": state, "questions_json": questions, "price": meta["price"],
             "testnet_price": meta.get("testnet_price"), "sl_bp": meta["sl_bp"], "tp_bp": meta["tp_bp"], "horizon_min": meta["horizon_min"],
         }
@@ -307,7 +355,7 @@ class Engine:
 
     # ------------------------------------------------------------------ news
     async def on_news(self, item: dict[str, Any]) -> None:
-        if not (self.s.kairos_news_enabled and self.kairos.configured):
+        if not (self.s.kairos_news_enabled and self.kairos.configured and self.kairos.spec.supports_news_return):
             return
         targets = item["symbols"][:2]
         for sym in targets:

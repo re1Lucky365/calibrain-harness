@@ -50,6 +50,11 @@ export function useStore<T>(sel: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state), () => sel(state));
 }
 
+/** Label of the active classification model ("Kairos", "Jev", ...). */
+export function useModelLabel(): string {
+  return useStore((s) => s.ov?.kairos?.label) || "Model";
+}
+
 // Bars go straight to the chart (no React render): the chart registers a sink.
 type BarSink = (b: Bar) => void;
 let barSink: BarSink | null = null;

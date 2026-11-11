@@ -158,6 +158,10 @@ class DB:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(decisions)")}
         if "run_id" not in cols:
             self.conn.execute("ALTER TABLE decisions ADD COLUMN run_id INTEGER")
+        if "model_provider" not in cols:
+            # which classification model answered; everything before multi-model support was Kairos
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN model_provider TEXT")
+            self.conn.execute("UPDATE decisions SET model_provider='kairos' WHERE model_provider IS NULL")
         tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(trades)")}
         if "run_id" not in tcols:
             self.conn.execute("ALTER TABLE trades ADD COLUMN run_id INTEGER")

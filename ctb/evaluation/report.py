@@ -98,9 +98,10 @@ def observations(m: dict[str, Any]) -> list[str]:
 def render(m: dict[str, Any], settings_view: dict[str, Any]) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
-        "# Kairos evaluation report: perpetual futures trading",
+        "# Model evaluation report: perpetual futures trading",
         "",
-        f"Generated {now}. Question set `{QUESTION_SET_VERSION}`. Model `{settings_view['kairos_model']}` via `{settings_view['kairos_base_url']}`.",
+        f"Generated {now}. Question set `{QUESTION_SET_VERSION}`. Active model `{settings_view.get('model_label', 'Kairos')}` (`{settings_view.get('model_id', settings_view.get('kairos_model'))}`). "
+        f"Metrics cover {'model ' + m['generated_from']['model'] if m.get('generated_from', {}).get('model') else 'every model'}.",
         "",
         "## Setup",
         f"- Instruments: {', '.join(settings_view['symbols'])} (Bybit USDT perpetuals). Signals from mainnet public data; orders on Bybit testnet.",

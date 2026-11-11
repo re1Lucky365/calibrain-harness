@@ -85,23 +85,30 @@ class Calibrator:
     """Weights are fitted per trading timeframe: a 1m bar with a 30 min horizon is a different
     question from a 5m bar with a 2 h horizon, so one timeframe's weights never drive another's."""
 
-    def __init__(self, db: DB, qset_prefix: str = "perp-v2", tf_fn: Callable[[], str] | None = None):
+    def __init__(self, db: DB, qset_prefix: str = "perp-v2", tf_fn: Callable[[], str] | None = None,
+                 provider_fn: Callable[[], str] | None = None):
         self.db = db
         self.qset_prefix = qset_prefix
         self.tf_fn = tf_fn
+        self.provider_fn = provider_fn  # weights are per model too: Jev never inherits Kairos's
         self.tf: str | None = None
+        self.provider: str | None = None
         self.report: dict[str, Any] = {}
         self.weights: dict[str, float] = {q: PRIOR_W for q in CALIBRATED}
         self.fitted_at = 0.0
 
     def refit(self) -> dict[str, float]:
         self.tf = self.tf_fn() if self.tf_fn else None
+        self.provider = self.provider_fn() if self.provider_fn else None
         sql = ("SELECT parsed_json, label_json, decision_json, sl_bp FROM decisions WHERE probe IS NULL AND error_kind IS NULL "
                "AND label_json IS NOT NULL AND qset_version LIKE ?")
         params: list[Any] = [self.qset_prefix + "%"]
         if self.tf:
             sql += " AND decision_tf=?"
             params.append(self.tf)
+        if self.provider:
+            sql += " AND model_provider=?"
+            params.append(self.provider)
         decs = self.db.query(sql, params)
         self.report = {q: fit(rows_for(q, decs)) for q in CALIBRATED}
         self.weights = {q: r["w"] for q, r in self.report.items()}
@@ -110,6 +117,7 @@ class Calibrator:
 
     def maybe_refit(self, every_s: float = 900) -> dict[str, float]:
         tf_changed = self.tf_fn is not None and self.tf_fn() != self.tf
-        if tf_changed or time.time() - self.fitted_at > every_s:
+        model_changed = self.provider_fn is not None and self.provider_fn() != self.provider
+        if tf_changed or model_changed or time.time() - self.fitted_at > every_s:
             self.refit()
         return self.weights

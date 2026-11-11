@@ -529,3 +529,62 @@ def test_calibration_is_fitted_per_model(tmp_path):
     assert cal.refit()["direction"] == 0.0
     prov["v"] = "jev"
     assert cal.maybe_refit()["direction"] == PRIOR_W  # Jev starts from the prior, never from Kairos's weights
+
+
+def test_concurrent_entries_respect_same_side_cap(tmp_path):
+    """Fast models answer every symbol at once; caps must hold when entries run concurrently."""
+    import asyncio
+    import time as _t
+    from ctb.broker.executor import Executor
+    from ctb.db import DB
+
+    class FakeClient:
+        def __init__(self):
+            self.pos = []
+
+        async def orderbook(self, symbol, depth=50):
+            await asyncio.sleep(0.01)
+            return {"bids": [(99.99, 1e6)], "asks": [(100.0, 1e6)]}
+
+        async def set_leverage(self, *a, **k):
+            return None
+
+        async def ticker(self, symbol):
+            return {"markPrice": "100", "lastPrice": "100"}
+
+        async def market_order(self, symbol, side, qty, **k):
+            await asyncio.sleep(0.05)  # fills land after the other entries already checked the caps
+            self.pos.append({"symbol": symbol, "side": "Sell", "size": qty, "avgPrice": "99.99", "stopLoss": "101", "takeProfit": ""})
+            return {"orderId": f"o-{symbol}"}
+
+        async def order_history(self, symbol, order_link_id=None, order_id=None):
+            return {"orderStatus": "Filled", "cumExecQty": "1", "avgPrice": "99.99", "cumExecFee": "0.01", "orderId": f"o-{symbol}"}
+
+        async def set_trading_stop(self, *a, **k):
+            return None
+
+        async def limit_order(self, *a, **k):
+            return {"orderId": "tp"}
+
+        async def wallet(self):
+            return {"equity": 100000.0}
+
+        async def positions(self):
+            return list(self.pos)
+
+        async def open_orders(self):
+            return []
+
+    s = strict()
+    s.trading_enabled, s.max_same_side, s.max_positions, s.max_open_risk_pct = True, 4, 10, 50
+    ex = Executor(s, DB(tmp_path / "t.db"), FakeClient(), emit=lambda *a: None)
+    syms = [f"S{i}USDT" for i in range(6)]
+    ex.instruments = {sym: {"tick_size": 0.01, "qty_step": 0.001, "min_qty": 0.001, "min_notional": 5, "max_qty": 1e9, "max_leverage": 10} for sym in syms}
+    ex.wallet, ex.last_sync = {"equity": 100000.0}, _t.time()
+
+    async def run():
+        return await asyncio.gather(*(ex.open(symbol=sym, side="short", sl_bp=60, tp_bp=100, decision_id=i, ev_r=0.0, exploration=True)
+                                      for i, sym in enumerate(syms)))
+    res = asyncio.run(run())
+    assert sum(1 for r in res if r.get("ok")) == 4
+    assert all("max same side" in r["reason"] for r in res if not r.get("ok"))

@@ -83,7 +83,7 @@ export function CommandBar() {
   };
 
   const onTrading = async (on: boolean) => {
-    if (on && !confirm("Enable AUTO-TRADE: the bot will place orders on your Bybit TESTNET account when Kairos signals pass all gates.")) return;
+    if (on && !confirm(`Enable AUTO-TRADE: the bot will place orders on your Bybit TESTNET account when ${ov?.kairos?.label || "model"} signals pass all gates.`)) return;
     try {
       await post("/api/trading", { enabled: on });
     } catch (err: any) {
@@ -93,7 +93,7 @@ export function CommandBar() {
     loadOverview();
   };
   const onExplore = async (on: boolean) => {
-    if (on && !confirm(`EXPLORE: trade Kairos's preferred side even when the strict gates say the edge is unproven.\n\nRisk per exploration trade: ${ov?.settings.explore_risk_pct ?? 0.1}% of equity. Safety gates still apply. Orders are only placed while AUTO-TRADE is also on.`)) return;
+    if (on && !confirm(`EXPLORE: trade the model's preferred side even when the strict gates say the edge is unproven.\n\nRisk per exploration trade: ${ov?.settings.explore_risk_pct ?? 0.1}% of equity. Safety gates still apply. Orders are only placed while AUTO-TRADE is also on.`)) return;
     try { await post("/api/settings", { exploration_mode: on }); } catch (err: any) { alert(err.message); }
     loadOverview();
   };
@@ -117,7 +117,7 @@ export function CommandBar() {
         <button className="go" type="submit">GO</button>
       </form>
       <div className="cmd-right">
-        <label className="arm explore" data-tip="Exploration: trade Kairos's preferred side even when strict quality gates block it, at reduced risk. Safety gates still apply.">
+        <label className="arm explore" data-tip="Exploration: trade the model's preferred side even when strict quality gates block it, at reduced risk. Safety gates still apply.">
           <input type="checkbox" checked={!!ov?.settings.exploration_mode} onChange={(e) => onExplore(e.target.checked)} />
           <span className="arm-box" /><span>EXPLORE</span>
         </label>
@@ -173,19 +173,53 @@ export function FKeys() {
       ))}
       <span className="fk-spacer" />
       {st && (
-        <span className="tradetf" data-tip="How often Kairos is asked and trades are decided. The chart buttons only change the view.">
+        <span className="tradetf" data-tip="How often the model is asked and trades are decided. The chart buttons only change the view.">
           <span className="tt-l">TRADE TF</span>
           <span className="seg">
             {Object.entries<any>(st.tf_profiles).map(([tf, p]) => (
               <button key={tf} className={tf === st.decision_tf ? "on" : ""} onClick={() => setState({ modal: { kind: "tf", data: tf } })}
-                data-tip={`${p.label}: decide every ${p.label} close · hold ≤ ${p.horizon_minutes}m · stop from ${p.atr_tf}m ATR · ~${p.required_rph} Kairos req/h`}>{p.label}</button>
+                data-tip={`${p.label}: decide every ${p.label} close · hold ≤ ${p.horizon_minutes}m · stop from ${p.atr_tf}m ATR · ~${p.required_rph} model req/h`}>{p.label}</button>
             ))}
           </span>
           <span className="tt-h">hold ≤ {st.horizon_minutes >= 60 ? `${st.horizon_minutes / 60}h` : `${st.horizon_minutes}m`} · stop {st.atr_tf}m ATR</span>
         </span>
       )}
-      <span className="venue">VENUE <b>BYBIT TESTNET</b> · SIGNALS <b>BYBIT MAINNET</b> · MODEL <b>DMIND/KAIROS</b></span>
+      {st && <ModelSwitch />}
+      <span className="venue">VENUE <b>BYBIT TESTNET</b> · SIGNALS <b>BYBIT MAINNET</b> · MODEL <b>{String(st?.model_id || "—").toUpperCase()}</b></span>
     </nav>
+  );
+}
+
+/** Which classification model makes the decisions. Switching is only allowed while flat and starts a new run. */
+function ModelSwitch() {
+  const st = useStore((s) => s.ov?.settings);
+  if (!st?.models) return null;
+  const pick = async (provider: string) => {
+    if (provider === st.model_provider) return;
+    const m = st.models[provider];
+    if (!m.configured) {
+      alert(`${m.label} has no API key yet. Add it under KEYS first.`);
+      setState({ modal: { kind: "keys" } });
+      return;
+    }
+    if (!confirm(`Switch the model to ${m.label} (${m.model_id})?\n\nThe current run ends and a new run starts, so results never mix two models. Calibration for ${m.label} starts from its own history (0.5 prior if none).${m.news_return ? "" : `\n\nNews forecasts (news_return) are Kairos-only and pause while ${m.label} is active.`}`)) return;
+    try {
+      await post("/api/model", { provider });
+    } catch (e: any) {
+      alert(e.message);
+    }
+    loadOverview();
+  };
+  return (
+    <span className="tradetf" data-tip="Classification model that answers the questions. Switching starts a new run.">
+      <span className="tt-l">MODEL</span>
+      <span className="seg">
+        {Object.entries<any>(st.models).map(([p, m]) => (
+          <button key={p} className={p === st.model_provider ? "on" : ""} onClick={() => pick(p)}
+            data-tip={`${m.label} · ${m.vendor} · ${m.model_id}${m.configured ? "" : " · no key yet"}`}>{m.label.toUpperCase()}</button>
+        ))}
+      </span>
+    </span>
   );
 }
 
@@ -194,8 +228,8 @@ export function Alerts() {
   const sock = useStore((s) => s.socket.connected);
   if (!ov) return null;
   const a: React.ReactNode[] = [];
-  if (!ov.kairos.configured) a.push(<div key="k" className="alert"><b>KAIROS KEY NOT SET.</b> Market data is live; no decisions are made. <a href="#" onClick={(e) => { e.preventDefault(); setState({ modal: { kind: "keys" } }); }}>Add key ›</a></div>);
-  if (ov.kairos.last_error) a.push(<div key="ke" className="alert crit"><b>KAIROS ERROR</b> {ov.kairos.last_error}</div>);
+  if (!ov.kairos.configured) a.push(<div key="k" className="alert"><b>{String(ov.kairos.label || "MODEL").toUpperCase()} KEY NOT SET.</b> Market data is live; no decisions are made. <a href="#" onClick={(e) => { e.preventDefault(); setState({ modal: { kind: "keys" } }); }}>Add key ›</a></div>);
+  if (ov.kairos.last_error) a.push(<div key="ke" className="alert crit"><b>{String(ov.kairos.label || "MODEL").toUpperCase()} ERROR</b> {ov.kairos.last_error}</div>);
   if (ov.account?.halted_reason) a.push(<div key="h" className="alert crit"><b>TRADING HALTED</b> {ov.account.halted_reason}</div>);
   if (ov.executor_error) a.push(<div key="x" className="alert crit"><b>TESTNET</b> {ov.executor_error}</div>);
   if (!sock) a.push(<div key="s" className="alert"><b>LIVE STREAM RECONNECTING.</b> Prices and the account update again as soon as the socket is back.</div>);
@@ -223,7 +257,7 @@ export function StatusLine() {
         <Dot c={sock.connected && stale !== null && stale < 3 ? "ok" : sock.connected ? "warn" : "bad"} />UI SOCKET <b>{sock.connected ? "LIVE" : "DOWN"}</b>
         {sock.latencyMs !== null && <> · <b>{sock.latencyMs.toFixed(0)}</b> ms</>}
       </span>
-      <span><Dot c={!k.configured ? "warn" : k.last_error ? "bad" : "ok"} />KAIROS <b>{k.configured ? (k.last_error ? "ERROR" : "READY") : "NO KEY"}</b> {k.requests_last_hour}/{k.budget_per_hour} req/h</span>
+      <span><Dot c={!k.configured ? "warn" : k.last_error ? "bad" : "ok"} />{String(k.label || "MODEL").toUpperCase()} <b>{k.configured ? (k.last_error ? "ERROR" : "READY") : "NO KEY"}</b> {k.requests_last_hour}/{k.budget_per_hour} req/h</span>
       <span><Dot c={ov.executor_error ? "bad" : a?.private_stream ? "ok" : "warn"} />TESTNET <b>{ov.executor_error ? "OFFLINE" : a?.private_stream ? "STREAMING" : "POLLING"}</b>{a?.last_sync ? ` · sync ${age(now / 1000 - a.last_sync)}` : ""}</span>
       {ov.run && <span data-tip={ov.run.name}>RUN <b className="amb">{ov.run.id}</b></span>}
       <span>MODE <b className={a?.trading_enabled ? "up" : ""}>{a?.trading_enabled ? "AUTO-TRADE" : "OBSERVE"}</b>{st.exploration_mode && <b className="amb"> · EXPLORE</b>}</span>

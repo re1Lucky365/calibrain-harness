@@ -56,7 +56,7 @@ function StateModal({ data }: { data: any }) {
   const p = data.preview, n = JSON.stringify(p.state).length;
   return (
     <Dialog>
-      <div className="ph"><span className="code">STATE</span>Exact state sent to Kairos · {data.symbol}</div>
+      <div className="ph"><span className="code">STATE</span>Exact state sent to the model · {data.symbol}</div>
       <p>{n} chars ≈ {Math.round(n / 3.6)} tokens. Built {age(Date.now() / 1000 - p.ts)} ago.</p>
       <div><J x={p.state} /></div>
     </Dialog>
@@ -65,9 +65,9 @@ function StateModal({ data }: { data: any }) {
 
 function HelpModal() {
   const rows: [string, string][] = [
-    ["BTC · ETH · SOL …", "Load a symbol into chart, Kairos, book and stats"], ["ASK", "Ask Kairos now for the loaded symbol (1 request)"],
+    ["BTC · ETH · SOL …", "Load a symbol into chart, model signal, book and stats"], ["ASK", "Ask the active model now for the loaded symbol (1 request)"],
     ["PRB", "Ask + repeat & mirror consistency probes (4 requests)"], ["1M 5M 15M 1H 4H", "Chart timeframe (view only)"],
-    ["POS 10", "Max open positions (1–50); new entries only"], ["TF 1M · TF 5M · TF 15M · TF 1H", "Trading timeframe: how often Kairos decides and trades"],
+    ["POS 10", "Max open positions (1–50); new entries only"], ["TF 1M · TF 5M · TF 15M · TF 1H", "Trading timeframe: how often the model decides and trades"], ["MODEL", "Kairos or Jev: switch in the function-key bar (starts a new run)"],
     ["UNIV", "Choose the symbols the bot watches and trades"], ["MON EVAL TRD NEWS LOG", "Switch screen (also F1–F5)"], ["KEYS · HELP", "API credentials · this list"], ["/", "Focus the command line from anywhere"],
   ];
   return (
@@ -106,15 +106,15 @@ function TfModal({ tf }: { tf: string }) {
       <div style={{ margin: "8px 10px" }}>
         <div className="tfgrid">
           <Row k="" a={"NOW · " + cur.label} b={"NEW · " + nxt.label} />
-          <Row k="Kairos asked" a={`every ${cur.label} close`} b={`every ${nxt.label} close`} />
+          <Row k="Model asked" a={`every ${cur.label} close`} b={`every ${nxt.label} close`} />
           <Row k="Max hold / time-stop" a={hrs(cur.horizon_minutes)} b={hrs(nxt.horizon_minutes)} />
           <Row k="Stop sized from" a={`${cur.atr_tf}m ATR × ${st.sl_atr} (≥ ${st.min_sl_bp}bp)`} b={`${nxt.atr_tf}m ATR × ${st.sl_atr} (≥ ${st.min_sl_bp}bp)`} />
-          <Row k="Kairos requests / hour" a={`~${cur.required_rph}`} b={`~${nxt.required_rph}`} />
+          <Row k="Model requests / hour" a={`~${cur.required_rph}`} b={`~${nxt.required_rph}`} />
           <Row k="Input tokens / hour" a={tok(cur.required_rph)} b={tok(nxt.required_rph)} />
         </div>
         <p className="muted" style={{ margin: "8px 0 0" }}>Takes effect at the next {nxt.label} bar close. Open positions keep their original time-stop. Every decision is stamped with its timeframe, so EVAL can compare them separately. Saved to .env.</p>
         {over && <div className="warnbox"><b className="amb">BUDGET.</b> {nxt.label} needs ~{nxt.required_rph} requests/hour but the cap is {budget}. With the current cap, about {Math.round(100 * (1 - budget / nxt.required_rph))}% of bars would be skipped.</div>}
-        {tf === "1" && <div className="warnbox"><b className="amb">1M NOTE.</b> Kairos answers in ~7–13 s, so 1m entries land ~10 s into the next bar, and the 40bp stop floor means fees are ~0.37R per trade.</div>}
+        {tf === "1" && <div className="warnbox"><b className="amb">1M NOTE.</b> Kairos answers in ~7–13 s (measure Jev in EVAL), so 1m entries land ~10 s into the next bar, and the 40bp stop floor means fees are ~0.37R per trade.</div>}
       </div>
       <div className="keyactions" style={{ margin: "8px 10px" }}>
         {over ? <><button className="kbtn amber" onClick={() => go(true)}>SWITCH + RAISE CAP TO {nxt.required_rph}/H</button><button className="kbtn" onClick={() => go(false)}>SWITCH, KEEP CAP {budget}</button></>
@@ -137,6 +137,9 @@ function KeysModal() {
   useEffect(() => { load().catch(() => {}); }, []);
   const run = async (id: string, fn: () => Promise<void>) => { setBusy(id); try { await fn(); } finally { setBusy(null); } };
   const kairosResult = (r: any) => setKMsg(r.ok ? { ok: true, text: `Kairos reachable · ${r.latency_ms} ms · model ${r.model || "DMIND/Kairos"}` } : { ok: false, text: r.error });
+  const [jMsg, setJMsg] = useState<Msg>(null);
+  const jevKey = useRef<HTMLInputElement>(null);
+  const jevResult = (r: any) => setJMsg(r.ok ? { ok: true, text: `Jev reachable · ${r.latency_ms} ms · model ${r.model || "jev"}` } : { ok: false, text: r.error });
   const Stat = ({ ok, txt }: { ok: boolean; txt: string }) => <span className={ok ? "up" : "dn"}>● {txt}</span>;
   return (
     <Dialog className="keys">
@@ -158,6 +161,22 @@ function KeysModal() {
           <span className="muted">A test uses 1 request from the hourly budget.</span>
         </div>
         <div className={`keymsg ${kMsg ? (kMsg.ok ? "ok" : "bad") : ""}`}>{kMsg?.text}</div>
+      </section>
+      <section className="keybox">
+        <div className="keyhead"><b>JEV · TYPESAFE</b>{k && (k.jev?.set ? <Stat ok txt={`SET ${k.jev.hint} · ${k.jev.model_id}`} /> : <Stat ok={false} txt="NOT SET" />)}</div>
+        <p>Create a key in the <a href="https://console.typesafe.ai/keys" target="_blank" rel="noopener noreferrer">TypeSafe console</a>. Billed per input token. The model is pinned to a version (default <code>jev-1.14.0</code>, override with <code>CTB_JEV_MODEL</code>) so results never mix releases. Switch to Jev with MODEL in the function-key bar.</p>
+        <label>API KEY<input ref={jevKey} type="password" autoComplete="off" spellCheck={false} placeholder="paste TypeSafe API key" /></label>
+        <div className="keyactions">
+          <button className="kbtn amber" type="button" disabled={!!busy} onClick={() => run("js", async () => {
+            const key = jevKey.current!.value.trim();
+            if (!key) return setJMsg({ ok: false, text: "Paste a key first" });
+            try { jevResult(await post("/api/keys/jev", { api_key: key })); jevKey.current!.value = ""; } catch (e: any) { setJMsg({ ok: false, text: e.message }); }
+            load(); loadOverview();
+          })}>{busy === "js" ? "WORKING…" : "SAVE & TEST"}</button>
+          <button className="kbtn" type="button" disabled={!!busy} onClick={() => run("jt", async () => { try { jevResult(await post("/api/keys/jev/test")); } catch (e: any) { setJMsg({ ok: false, text: e.message }); } })}>{busy === "jt" ? "WORKING…" : "TEST CURRENT KEY"}</button>
+          <span className="muted">A test uses 1 request from the hourly budget.</span>
+        </div>
+        <div className={`keymsg ${jMsg ? (jMsg.ok ? "ok" : "bad") : ""}`}>{jMsg?.text}</div>
       </section>
       <section className="keybox">
         <div className="keyhead"><b>BYBIT · TESTNET</b>{k && (k.bybit.api_key.set ? <Stat ok={k.bybit.connected} txt={`KEY ${k.bybit.api_key.hint} · ${k.bybit.connected ? "CONNECTED" : "ERROR"}`} /> : <Stat ok={false} txt="NOT SET" />)}</div>
@@ -226,7 +245,7 @@ function UniverseModal() {
   return (
     <Dialog>
       <div className="ph"><span className="code">UNIV</span>Symbol universe · signals Bybit mainnet · orders Bybit testnet</div>
-      <p>Pick the perps the bot watches and trades. Each needs ~{u ? fx(u.rph_per_symbol, 1) : "—"} Kairos requests/hour at the current {u?.decision_tf}m trading timeframe (one per bar close, plus consistency probes). Only perps listed on both mainnet and testnet can be chosen. Entries take only testnet liquidity within {u?.max_entry_slip_bp}bp of the best price, so a thin testnet book means small or unfilled orders.</p>
+      <p>Pick the perps the bot watches and trades. Each needs ~{u ? fx(u.rph_per_symbol, 1) : "—"} model requests/hour at the current {u?.decision_tf}m trading timeframe (one per bar close, plus consistency probes). Only perps listed on both mainnet and testnet can be chosen. Entries take only testnet liquidity within {u?.max_entry_slip_bp}bp of the best price, so a thin testnet book means small or unfilled orders.</p>
       <div className="unibar">
         <input type="text" placeholder="filter or type a symbol" value={q} onChange={(e) => setQ(e.target.value)} />
         <span>SELECTED <b className="amb">{sel.length}</b>/{u?.max_symbols ?? 30}</span>
@@ -266,7 +285,7 @@ function UniverseModal() {
           </table>
         </div>
       )}
-      {over && <div className="warnbox" style={{ margin: "6px 10px" }}><b className="amb">BUDGET.</b> {sel.length} symbols need ~{need} Kairos requests/hour, above the cap of {u.budget_per_hour}. Remove symbols, switch to a slower trading timeframe, or raise the cap.</div>}
+      {over && <div className="warnbox" style={{ margin: "6px 10px" }}><b className="amb">BUDGET.</b> {sel.length} symbols need ~{need} model requests/hour, above the cap of {u.budget_per_hour}. Remove symbols, switch to a slower trading timeframe, or raise the cap.</div>}
       {err && <div className="keymsg bad" style={{ margin: "6px 10px" }}>{err}</div>}
       <div className="keyactions" style={{ margin: "8px 10px" }}>
         {over

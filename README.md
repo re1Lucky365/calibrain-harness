@@ -1,3 +1,184 @@
+enterprise-security-platform/
+├── ... (existing networking, crypto, iam, threat, devsecops, compliance modules)
+├── credential-vault-sso/       # Zero-knowledge global password & WebAuthn/Passkey manager
+├── time-tracking-ledger/       # Automated activity tracking, billing & immutable timelines
+└── docker-compose.yml          # Master orchestration to launch all platform services
+import os
+import json
+import time
+import hashlib
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+class ZeroKnowledgeCredentialManager:
+    def __init__(self):
+        self.vault_records = {}
+        self.registered_passkeys = {}
+
+    def _derive_master_key(self, master_password: str, salt: bytes) -> bytes:
+        """Derives a 256-bit encryption key from a master password using Scrypt."""
+        kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
+        return kdf.derive(master_password.encode('utf-8'))
+
+    def store_account_credential(self, account_id: str, service_name: str, username: str, secret_password: str, master_password: str) -> dict:
+        """Encrypts and stores account credentials using Zero-Knowledge AES-256-GCM."""
+        salt = os.urandom(16)
+        nonce = os.urandom(12)
+        derived_key = self._derive_master_key(master_password, salt)
+        aesgcm = AESGCM(derived_key)
+
+        payload = json.dumps({
+            "service": service_name,
+            "username": username,
+            "password": secret_password,
+            "updated_at_utc": time.time()
+        }).encode('utf-8')
+
+        ciphertext = aesgcm.encrypt(nonce, payload, account_id.encode('utf-8'))
+        
+        record = {
+            "account_id": account_id,
+            "service_name": service_name,
+            "salt": salt.hex(),
+            "nonce": nonce.hex(),
+            "encrypted_blob": ciphertext.hex()
+        }
+        self.vault_records[account_id] = record
+        return {"status": "ENCRYPTED_AND_STORED", "account_id": account_id, "service": service_name}
+
+    def retrieve_account_credential(self, account_id: str, master_password: str) -> dict:
+        """Decrypts an account record locally upon valid master key derivation."""
+        record = self.vault_records.get(account_id)
+        if not record:
+            raise ValueError("Account record not found.")
+
+        derived_key = self._derive_master_key(master_password, bytes.fromhex(record["salt"]))
+        aesgcm = AESGCM(derived_key)
+        
+        decrypted_bytes = aesgcm.decrypt(
+            bytes.fromhex(record["nonce"]),
+            bytes.fromhex(record["encrypted_blob"]),
+            account_id.encode('utf-8')
+        )
+        return json.loads(decrypted_bytes.decode('utf-8'))
+
+    def register_fido2_passkey(self, user_id: str, device_name: str, public_key_pem: str) -> dict:
+        """Registers a hardware/biometric passkey (FIDO2/WebAuthn) for passwordless SSO."""
+        credential_id = hashlib.sha256(f"{user_id}:{device_name}:{time.time()}".encode()).hexdigest()
+        self.registered_passkeys[credential_id] = {
+            "user_id": user_id,
+            "device_name": device_name,
+            "public_key": public_key_pem,
+            "biometric_enforced": True,
+            "status": "ACTIVE"
+        }
+        return {"credential_id": credential_id, "device": device_name, "sso_ready": True}
+import hashlib
+import json
+import datetime
+
+class ImmutableTimelineLedger:
+    def __init__(self):
+        self.chain = []
+        self._create_genesis_entry()
+
+    def _create_genesis_entry(self):
+        genesis = {
+            "index": 0,
+            "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "actor_badge": "SYSTEM-ROOT",
+            "category": "LEDGER_INIT",
+            "task_description": "Initialized Immutable Enterprise Timeline",
+            "duration_minutes": 0,
+            "previous_hash": "0" * 64
+        }
+        genesis["entry_hash"] = self._hash_entry(genesis)
+        self.chain.append(genesis)
+
+    @staticmethod
+    def _hash_entry(entry: dict) -> str:
+        entry_copy = {k: v for k, v in entry.items() if k != "entry_hash"}
+        encoded = json.dumps(entry_copy, sort_keys=True).encode('utf-8')
+        return hashlib.sha256(encoded).hexdigest()
+
+    def log_automated_session(self, actor_badge: str, category: str, task_description: str, duration_minutes: float) -> dict:
+        """Records a verified time-tracking entry linked to the previous cryptographic hash."""
+        previous_entry = self.chain[-1]
+        new_entry = {
+            "index": len(self.chain),
+            "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "actor_badge": actor_badge,
+            "category": category,
+            "task_description": task_description,
+            "duration_minutes": round(duration_minutes, 2),
+            "previous_hash": previous_entry["entry_hash"]
+        }
+        new_entry["entry_hash"] = self._hash_entry(new_entry)
+        self.chain.append(new_entry)
+        return new_entry
+
+    def verify_timeline_integrity(self) -> bool:
+        """Audits the entire timeline to confirm zero tampering or altered timestamps."""
+        for i in range(1, len(self.chain)):
+            current = self.chain[i]
+            previous = self.chain[i - 1]
+            if current["previous_hash"] != previous["entry_hash"]:
+                return False
+            if current["entry_hash"] != self._hash_entry(current):
+                return False
+        return True
+version: '3.9'
+
+services:
+  vault-kms:
+    image: hashicorp/vault:latest
+    container_name: enterprise-kms-vault
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN}
+      VAULT_ADDR: "http://0.0.0"
+    ports:
+      - "127.0.0.1:8200:8200"
+    networks:
+      - zero_trust_internal
+
+  credential-sso-service:
+    build: ./credential-vault-sso
+    container_name: enterprise-credential-manager
+    environment:
+      VAULT_ADDR: "http://vault-kms:8200"
+      ENFORCE_WEBAUTHN: "true"
+    depends_on:
+      - vault-kms
+    networks:
+      - zero_trust_internal
+
+  timeline-ledger-service:
+    build: ./time-tracking-ledger
+    container_name: enterprise-time-tracker
+    volumes:
+      - timeline_data:/app/ledger_storage
+    networks:
+      - zero_trust_internal
+
+  threat-detector-ai:
+    build: ./threat-detectors
+    container_name: enterprise-ai-threat-engine
+    environment:
+      PRIVACY_MODE: "GDPR_CCPA_STRICT"
+      PII_RETENTION: "false"
+    networks:
+      - zero_trust_internal
+
+networks:
+  zero_trust_internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  timeline_data:
+main.pymain.py
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/calibrain-harness-logo-dark.svg">
